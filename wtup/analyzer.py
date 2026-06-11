@@ -24,21 +24,43 @@ def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk)
 
 请只输出 JSON，不要使用 Markdown 代码块。JSON 字段如下：
 {{
+  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
   "summary": "一句话总结本分片最重要的变化",
   "importance": "低/中/高",
-  "highlights": ["重点变化 1", "重点变化 2"],
-  "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
-  "risks": ["不确定点、需要继续观察的地方"],
-  "recommendation": "是否建议玩家关注/更新，以及原因",
+  "update_sections": [
+    {{
+      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
+      "items": [
+        {{
+          "text": "条目内容",
+          "children": [
+            {{"text": "子条目内容", "children": []}}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "ai_analysis": {{
+    "changed_content": ["AI 分析出的实际改动内容"],
+    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
+    "uncertainties": ["不确定点、需要继续观察的地方"],
+    "recommendation": "是否建议玩家关注/更新，以及原因"
+  }},
   "tags": ["标签1", "标签2"]
 }}
 
 要求：
 1. 用中文。
-2. 优先解释数据变化可能代表什么，不要只复述文件名。
-3. 如果信息不足，要明确写“不确定”，不要编造。
-4. 每个数组最多 5 条，每条尽量短。
-5. 当前是第 {chunk.index}/{chunk.total} 个分片；如果是分片报告，请在 summary 中体现。
+2. 输出内容格式参考 War Thunder Datamine 更新日志：先按条目列出更新内容，再在下面列出 AI 分析的改动内容。
+3. update_sections 使用中文标题，例如“新增载具”“新增文本”“武器调整”“经济调整”“其他变化”。
+4. update_sections.items 支持多级 children；要像更新日志一样保留层级，不要把所有内容压成一段。
+5. 如果出现载具名，且能从 diff 或文本中判断英文名和中文名，必须写成 英文名(中文名)，例如 JH-7A(飞豹)。无法判断中文名时只写原名，不要编造。
+6. 优先解释数据变化可能代表什么，不要只复述文件名。
+7. 如果信息不足，要明确写“不确定”，不要编造。
+8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
+9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加 Part、分片、说明文字或其他内容。
+10. summary 会显示在标题下面的小字行，可以写描述性标题或本分片摘要；不要把描述性标题写进 report_title。
+11. 当前是第 {chunk.index}/{chunk.total} 个分片；分片信息会由程序显示在标题下方，不要写进 report_title。
 
 以下是 GitHub 变更数据：
 
@@ -68,11 +90,24 @@ async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSumma
         return parsed
     return {
         "summary": first_non_empty_line(text) or "模型返回了非 JSON 分析结果。",
+        "report_title": "",
         "importance": "中",
+        "update_sections": [
+            {
+                "title": "模型原始输出",
+                "items": [{"text": text[:1200] if text else "模型返回为空。", "children": []}],
+            }
+        ],
         "highlights": [text[:1200]] if text else ["模型返回为空。"],
         "player_impact": [],
         "risks": ["模型输出格式未按 JSON 返回。"],
         "recommendation": "请结合 GitHub 原始 diff 复核。",
+        "ai_analysis": {
+            "changed_content": [text[:1200]] if text else ["模型返回为空。"],
+            "player_impact": [],
+            "uncertainties": ["模型输出格式未按 JSON 返回。"],
+            "recommendation": "请结合 GitHub 原始 diff 复核。",
+        },
         "tags": ["格式异常"],
         "raw_text": text,
     }
@@ -112,13 +147,17 @@ def parse_analysis_json(text: str) -> dict[str, Any] | None:
 
 
 def normalize_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+    ai_analysis = normalize_ai_analysis(payload)
     return {
+        "report_title": str(payload.get("report_title") or "").strip(),
         "summary": str(payload.get("summary") or "").strip() or "本次更新未给出摘要。",
         "importance": normalize_importance(payload.get("importance")),
+        "update_sections": normalize_update_sections(payload.get("update_sections")),
+        "ai_analysis": ai_analysis,
         "highlights": normalize_list(payload.get("highlights")),
-        "player_impact": normalize_list(payload.get("player_impact")),
-        "risks": normalize_list(payload.get("risks")),
-        "recommendation": str(payload.get("recommendation") or "").strip(),
+        "player_impact": ai_analysis["player_impact"],
+        "risks": ai_analysis["uncertainties"],
+        "recommendation": ai_analysis["recommendation"],
         "tags": normalize_list(payload.get("tags"), limit=8),
     }
 
@@ -137,6 +176,66 @@ def normalize_list(value: Any, *, limit: int = 5) -> list[str]:
         items = []
     result = [str(item).strip() for item in items if str(item or "").strip()]
     return result[:limit]
+
+
+def normalize_ai_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("ai_analysis")
+    data = raw if isinstance(raw, dict) else {}
+    changed_content = normalize_list(data.get("changed_content") or payload.get("highlights"))
+    player_impact = normalize_list(data.get("player_impact") or payload.get("player_impact"))
+    uncertainties = normalize_list(data.get("uncertainties") or payload.get("risks"))
+    recommendation = str(data.get("recommendation") or payload.get("recommendation") or "").strip()
+    return {
+        "changed_content": changed_content,
+        "player_impact": player_impact,
+        "uncertainties": uncertainties,
+        "recommendation": recommendation,
+    }
+
+
+def normalize_update_sections(value: Any, *, section_limit: int = 8, item_limit: int = 20) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    sections: list[dict[str, Any]] = []
+    for section in value:
+        if isinstance(section, dict):
+            title = str(section.get("title") or "").strip()
+            raw_items = section.get("items")
+        else:
+            title = ""
+            raw_items = section
+        items = normalize_update_items(raw_items, limit=item_limit)
+        if title and items:
+            sections.append({"title": title, "items": items})
+        if len(sections) >= section_limit:
+            break
+    return sections
+
+
+def normalize_update_items(value: Any, *, limit: int = 20, depth: int = 0) -> list[dict[str, Any]]:
+    if depth > 4:
+        return []
+    if isinstance(value, list):
+        items = value
+    elif value:
+        items = [value]
+    else:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            text = str(item.get("text") or item.get("title") or "").strip()
+            children = normalize_update_items(item.get("children"), limit=limit, depth=depth + 1)
+        else:
+            text = str(item or "").strip()
+            children = []
+        if text:
+            result.append({"text": text, "children": children})
+        if len(result) >= limit:
+            break
+    return result
 
 
 def first_non_empty_line(text: str) -> str:

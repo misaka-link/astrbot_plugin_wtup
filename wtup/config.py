@@ -12,8 +12,9 @@ REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"
 BRANCH_NAME = "master"
 DEFAULT_INTERVAL_MINUTES = 30
 DEFAULT_ANALYSIS_PROMPT = (
-    "请分析 War Thunder Datamine 的 GitHub commit 更新内容，提炼游戏数据变化、"
-    "可能影响、重要程度和玩家需要关注的内容。"
+    "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
+    "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
+    "写作 英文名(中文名)。"
 )
 
 

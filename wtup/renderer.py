@@ -29,24 +29,23 @@ RENDER_OPTIONS = {
 def build_report_html(template_path: Path, summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
     template = template_path.read_text(encoding="utf-8")
     importance = str(analysis.get("importance") or "中")
-    title_suffix = f"War Thunder Datamine 更新分析"
-    if chunk.total > 1:
-        title_suffix += f" ({chunk.index}/{chunk.total})"
+    report_title = report_display_title(summary, chunk, analysis)
+    update_subtitle = report_update_subtitle(chunk, analysis)
 
     replacements = {
         "{{ hero_image_src }}": "",
         "{{ report_kicker }}": f"GitHub Commit Monitor · 重要度 {importance}",
-        "{{ report_title }}": title_suffix,
-        "{{ report_subtitle }}": html.escape(str(analysis.get("summary") or "")),
+        "{{ report_title }}": "War Thunder Datamine 更新",
+        "{{ report_subtitle }}": html.escape(update_subtitle),
         "{{ repo_name }}": REPO_FULL_NAME,
         "{{ branch_name }}": BRANCH_NAME,
         "{{ commit_range }}": f"{short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}",
         "{{ change_stats }}": f"{len(chunk.files)}/{summary.total_files} 文件 · {chunk.patch_chars} 字符",
-        "{{ summary_html }}": render_paragraphs([str(analysis.get("summary") or "")]),
+        "{{ summary_html }}": render_update_content(report_title, update_subtitle, analysis),
         "{{ badges_html }}": render_badges([f"重要度 {importance}", *list(analysis.get("tags") or [])]),
-        "{{ article_html }}": render_article(analysis),
-        "{{ table_html }}": render_file_table(chunk.files),
-        "{{ sections_html }}": render_sections(analysis),
+        "{{ article_html }}": render_ai_analysis(analysis),
+        "{{ table_html }}": "",
+        "{{ sections_html }}": "",
         "{{ footer_note }}": html.escape(f"Source: {summary.compare_url or 'GitHub compare API'}"),
         "{{ footer_badge }}": html.escape(time.strftime("%Y-%m-%d %H:%M:%S")),
     }
@@ -79,37 +78,144 @@ async def render_report_image(plugin: Any, html_text: str, output_dir: Path) -> 
 
 
 def render_plain_text(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
-    lines = [
-        "War Thunder Datamine 更新分析",
-        f"仓库: {REPO_FULL_NAME}",
-        f"分支: {BRANCH_NAME}",
-        f"范围: {short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}",
-    ]
-    if chunk.total > 1:
-        lines.append(f"分片: {chunk.index}/{chunk.total}")
-    lines.extend(
-        [
-            f"重要度: {analysis.get('importance') or '中'}",
-            f"摘要: {analysis.get('summary') or ''}",
-        ]
-    )
-    for title, key in (("重点变化", "highlights"), ("可能影响", "player_impact"), ("风险/不确定", "risks")):
-        values = [str(item) for item in analysis.get(key, []) if str(item).strip()]
-        if not values:
+    lines = [report_display_title(summary, chunk, analysis)]
+    update_subtitle = report_update_subtitle(chunk, analysis)
+    if update_subtitle:
+        lines.append(update_subtitle)
+    lines.append("")
+    update_sections = normalized_update_sections_for_render(analysis)
+    for section in update_sections:
+        lines.append(f"{section['title']}:")
+        lines.extend(render_plain_update_items(section["items"], indent=0))
+        lines.append("")
+
+    ai_analysis = analysis.get("ai_analysis") if isinstance(analysis.get("ai_analysis"), dict) else {}
+    lines.append("AI 分析:")
+    for title, values in (
+        ("改动内容", ai_analysis.get("changed_content") or analysis.get("highlights") or []),
+        ("可能影响", ai_analysis.get("player_impact") or analysis.get("player_impact") or []),
+        ("风险/不确定", ai_analysis.get("uncertainties") or analysis.get("risks") or []),
+    ):
+        normalized = [str(item).strip() for item in values if str(item or "").strip()]
+        if not normalized:
             continue
-        lines.append(f"\n{title}:")
-        lines.extend(f"- {item}" for item in values)
-    recommendation = str(analysis.get("recommendation") or "").strip()
+        lines.append(f"{title}:")
+        lines.extend(f"- {item}" for item in normalized)
+    recommendation = str(ai_analysis.get("recommendation") or analysis.get("recommendation") or "").strip()
     if recommendation:
-        lines.extend(["", f"建议: {recommendation}"])
+        lines.append(f"建议: {recommendation}")
+    lines.extend(["", f"Source: {summary.compare_url or 'GitHub compare API'}"])
     return "\n".join(lines)
 
 
-def render_article(analysis: dict[str, Any]) -> str:
-    recommendation = str(analysis.get("recommendation") or "").strip()
-    if not recommendation:
-        return ""
-    return f"<h2>建议</h2><p>{html.escape(recommendation)}</p>"
+def report_display_title(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
+    title = str(analysis.get("report_title") or "").strip()
+    if not title:
+        title = f"{short_sha(summary.base_sha)}->{short_sha(summary.head_sha)}"
+    return title
+
+
+def report_update_subtitle(chunk: DiffChunk, analysis: dict[str, Any]) -> str:
+    parts = []
+    if chunk.total > 1:
+        parts.append(f"Part {chunk.index}/{chunk.total}")
+    summary = str(analysis.get("summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    return " · ".join(parts)
+
+
+def render_update_content(title: str, subtitle: str, analysis: dict[str, Any]) -> str:
+    sections = normalized_update_sections_for_render(analysis)
+    parts = [
+        '<div class="update-report">',
+        f'<h2 class="update-title">{html.escape(title)}</h2>',
+    ]
+    if subtitle:
+        parts.append(f'<div class="update-subtitle">{html.escape(subtitle)}</div>')
+    for section in sections:
+        parts.append('<section class="update-section">')
+        parts.append(f'<h3>{html.escape(section["title"])}</h3>')
+        parts.append(render_update_items(section["items"]))
+        parts.append("</section>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def normalized_update_sections_for_render(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = analysis.get("update_sections") if isinstance(analysis.get("update_sections"), list) else []
+    normalized = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title") or "").strip()
+        items = section.get("items")
+        if title and isinstance(items, list) and items:
+            normalized.append({"title": title, "items": items})
+    if normalized:
+        return normalized
+
+    highlights = [
+        {"text": str(item).strip(), "children": []}
+        for item in analysis.get("highlights", [])
+        if str(item or "").strip()
+    ]
+    if highlights:
+        return [{"title": "更新内容", "items": highlights}]
+    return [{"title": "更新内容", "items": [{"text": "本分片没有可展示的更新条目。", "children": []}]}]
+
+
+def render_update_items(items: list[dict[str, Any]]) -> str:
+    children = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        nested = item.get("children") if isinstance(item.get("children"), list) else []
+        if not text:
+            continue
+        child_html = render_update_items(nested) if nested else ""
+        children.append(f"<li><span>{html.escape(text)}</span>{child_html}</li>")
+    return "<ul>" + "".join(children) + "</ul>" if children else ""
+
+
+def render_plain_update_items(items: list[dict[str, Any]], *, indent: int) -> list[str]:
+    lines = []
+    prefix = "  " * indent + "- "
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{prefix}{text}")
+        children = item.get("children") if isinstance(item.get("children"), list) else []
+        lines.extend(render_plain_update_items(children, indent=indent + 1))
+    return lines
+
+
+def render_ai_analysis(analysis: dict[str, Any]) -> str:
+    ai_analysis = analysis.get("ai_analysis") if isinstance(analysis.get("ai_analysis"), dict) else {}
+    specs = [
+        ("改动内容", ai_analysis.get("changed_content") or analysis.get("highlights") or []),
+        ("可能影响", ai_analysis.get("player_impact") or analysis.get("player_impact") or []),
+        ("风险与不确定", ai_analysis.get("uncertainties") or analysis.get("risks") or []),
+    ]
+    parts = ['<div class="ai-analysis"><h2>AI 分析</h2>']
+    has_content = False
+    for title, values in specs:
+        normalized = [str(item).strip() for item in values if str(item or "").strip()]
+        if not normalized:
+            continue
+        has_content = True
+        list_items = "".join(f"<li>{html.escape(item)}</li>" for item in normalized)
+        parts.append(f"<h3>{html.escape(title)}</h3><ul>{list_items}</ul>")
+    recommendation = str(ai_analysis.get("recommendation") or analysis.get("recommendation") or "").strip()
+    if recommendation:
+        has_content = True
+        parts.append(f"<h3>建议</h3><p>{html.escape(recommendation)}</p>")
+    parts.append("</div>")
+    return "".join(parts) if has_content else ""
 
 
 def render_sections(analysis: dict[str, Any]) -> str:
