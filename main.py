@@ -10,7 +10,13 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 try:
-    from .wtup.analyzer import analyze_chunks, merge_chunk_analyses, refine_merged_analysis
+    from .wtup.analyzer import (
+        analyze_chunks,
+        fallback_analysis,
+        merge_chunk_analyses,
+        refine_chunk_analyses,
+        refine_merged_analysis,
+    )
     from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from .wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from .wtup.github_client import GitHubClient, GitHubRequestError
@@ -18,7 +24,13 @@ try:
     from .wtup.renderer import build_report_html, render_plain_text, render_report_image
     from .wtup.state_store import StateStore
 except ImportError:
-    from wtup.analyzer import analyze_chunks, merge_chunk_analyses, refine_merged_analysis
+    from wtup.analyzer import (
+        analyze_chunks,
+        fallback_analysis,
+        merge_chunk_analyses,
+        refine_chunk_analyses,
+        refine_merged_analysis,
+    )
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from wtup.github_client import GitHubClient, GitHubRequestError
@@ -267,11 +279,26 @@ class WTUpdatePlugin(Star):
 
             logger.info("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
-            analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
             second_pass_enabled = self.settings.enable_second_pass_analysis and len(summary.chunks) > 1
-            if second_pass_enabled:
-                logger.info("[%s] 已启用二次分析，正在整理合并报告...", PLUGIN_NAME)
-                analysis = await refine_merged_analysis(self.context, self.settings, summary, analysis)
+            try:
+                analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
+                if second_pass_enabled:
+                    logger.info("[%s] 已启用二次分析，正在整理合并报告...", PLUGIN_NAME)
+                    analysis = await refine_merged_analysis(self.context, self.settings, summary, analysis)
+            except Exception as exc:
+                logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
+                if second_pass_enabled:
+                    logger.info("[%s] 已启用二次分析，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
+                    analysis = await refine_chunk_analyses(
+                        self.context,
+                        self.settings,
+                        summary,
+                        summary.chunks,
+                        chunk_results,
+                        merge_error=str(exc),
+                    )
+                else:
+                    analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
             report_chunk = DiffChunk(
                 index=1,
                 total=1,

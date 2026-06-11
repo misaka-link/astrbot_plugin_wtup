@@ -23,6 +23,7 @@ class ChunkAnalysis:
     chunk_total: int
     analysis: dict[str, Any]
     error: str = ""
+    raw_text: str = ""
 
 
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
@@ -152,6 +153,115 @@ JSON 字段如下：
 """.strip()
 
 
+def build_chunk_refinement_prompt(
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+    *,
+    merge_error: str = "",
+) -> str:
+    chunk_json = json.dumps(
+        build_chunk_refinement_payload(summary, chunks, results, merge_error=merge_error),
+        ensure_ascii=False,
+        indent=2,
+    )
+    return f"""
+{settings.analysis_prompt}
+
+你正在整理固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新最终报告。
+
+前面已经按 diff 分片完成多次模型分析，但程序合并分片结果时失败了。
+你的任务是直接基于每个分片的原始分析 JSON 做二次整理，生成最终报告。
+
+输出协议：
+1. 只能输出一个 JSON object。
+2. 不要输出 Markdown 代码块。
+3. 不要输出解释、前言、后记。
+4. JSON 必须能被 json.loads 直接解析。
+5. 所有字符串必须使用双引号。
+6. 不允许尾随逗号。
+7. 不确定的信息写入 uncertainties，不要编造。
+
+JSON 字段如下：
+{{
+  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
+  "summary": "一句话总结本次更新中最重要的变化",
+  "importance": "低/中/高",
+  "update_sections": [
+    {{
+      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
+      "items": [
+        {{
+          "text": "条目内容",
+          "children": [
+            {{"text": "子条目内容", "children": []}}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "ai_analysis": {{
+    "changed_content": ["AI 分析出的实际改动内容"],
+    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
+    "uncertainties": ["不确定点、需要继续观察的地方"],
+    "recommendation": "是否建议玩家关注/更新，以及原因"
+  }},
+  "tags": ["标签1", "标签2"]
+}}
+
+要求：
+1. 用中文。
+2. 只能使用分片分析 JSON 和 raw_text 中已有的信息，不要新增未经输入支持的内容。
+3. 去重重复条目，合并含义相近的条目。
+4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
+5. update_sections 使用中文标题，并保留条目层级。
+6. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
+7. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
+8. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
+9. 程序合并失败原因和分片分析失败信息必须保留到 uncertainties。
+
+分片分析数据:
+{chunk_json}
+""".strip()
+
+
+def build_chunk_refinement_payload(
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+    *,
+    merge_error: str = "",
+) -> dict[str, Any]:
+    chunk_map = {chunk.index: chunk for chunk in chunks}
+    ordered_results = order_chunk_results(chunks, results)
+    empty_chunk = DiffChunk(index=0, total=0, files=[], patch_chars=0)
+    return {
+        "commit_range": f"{summary.base_sha[:7] or 'unknown'}...{summary.head_sha[:7] or 'unknown'}",
+        "total_commits": summary.total_commits,
+        "total_files": summary.total_files,
+        "merge_error": str(merge_error or "").strip(),
+        "chunks": [
+            {
+                "chunk_index": result.chunk_index,
+                "chunk_total": result.chunk_total,
+                "error": result.error,
+                "files": [
+                    str(file_info.get("filename") or "")
+                    for file_info in chunk_map.get(result.chunk_index, empty_chunk).files
+                ],
+                "analysis": json_safe(result.analysis),
+                "raw_text": result.raw_text[:4000],
+            }
+            for result in ordered_results
+        ],
+    }
+
+
+def json_safe(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
 async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
     response = await request_llm(context, settings, prompt)
     text = extract_response_text(response)
@@ -203,8 +313,11 @@ async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSumm
     results: list[ChunkAnalysis] = []
     for chunk in summary.chunks:
         try:
-            analysis = await analyze_chunk(context, settings, summary, chunk)
-            results.append(ChunkAnalysis(chunk.index, chunk.total, analysis))
+            prompt = build_prompt(settings, summary, chunk)
+            response = await request_llm(context, settings, prompt)
+            raw_text = extract_response_text(response)
+            analysis = safe_normalize_analysis(raw_text)
+            results.append(ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text))
         except Exception as exc:
             logger.warning("[%s] 模型分析失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
             results.append(
@@ -216,6 +329,28 @@ async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSumm
                 )
             )
     return results
+
+
+async def refine_chunk_analyses(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+    *,
+    merge_error: str = "",
+) -> dict[str, Any]:
+    prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
+    try:
+        response = await request_llm(context, settings, prompt)
+        text = extract_response_text(response)
+        parsed = parse_analysis_json(text)
+        if parsed is None:
+            raise ValueError("二次分析模型输出不是有效 JSON")
+        return parsed
+    except Exception as exc:
+        logger.warning("[%s] 分片二次分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
+        return fallback_analysis("模型分片分析已完成，但程序合并和二次分析均失败，需要结合 GitHub 原始 diff 复核。")
 
 
 def safe_normalize_analysis(text: str) -> dict[str, Any]:

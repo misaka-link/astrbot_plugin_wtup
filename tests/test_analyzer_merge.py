@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from wtup.analyzer import ChunkAnalysis, merge_chunk_analyses, refine_merged_analysis, safe_normalize_analysis
+from wtup.analyzer import (
+    ChunkAnalysis,
+    build_chunk_refinement_payload,
+    merge_chunk_analyses,
+    refine_chunk_analyses,
+    refine_merged_analysis,
+    safe_normalize_analysis,
+)
 from wtup.config import PluginConfig, load_config
 from wtup.diff_collector import DiffChunk, DiffSummary
 from wtup.renderer import report_update_subtitle
@@ -174,6 +181,72 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.calls, 1)
         self.assertEqual(refined["summary"], merged["summary"])
         self.assertEqual(refined["update_sections"], merged["update_sections"])
+
+    async def test_refine_chunk_analyses_uses_raw_chunk_json_when_merge_failed(self) -> None:
+        summary = make_summary()
+        results = [
+            ChunkAnalysis(1, 3, analysis("武器调整", "第一项"), raw_text='{"summary":"第一项"}'),
+            ChunkAnalysis(2, 3, analysis("经济调整", "第二项"), error="分片提醒"),
+        ]
+        context = FakeContext(
+            """
+            {
+              "report_title": "2.56.0.38->2.56.0.39",
+              "summary": "从分片 JSON 二次整理",
+              "importance": "中",
+              "update_sections": [{"title": "武器调整", "items": [{"text": "第一项", "children": []}]}],
+              "ai_analysis": {
+                "changed_content": ["第一项"],
+                "player_impact": [],
+                "uncertainties": ["程序合并失败"],
+                "recommendation": "建议复核"
+              },
+              "tags": ["武器调整"]
+            }
+            """
+        )
+
+        refined = await refine_chunk_analyses(
+            context,
+            make_settings(),
+            summary,
+            summary.chunks,
+            results,
+            merge_error="程序合并失败",
+        )
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(refined["summary"], "从分片 JSON 二次整理")
+
+    async def test_refine_chunk_analyses_falls_back_when_second_pass_fails(self) -> None:
+        summary = make_summary()
+        context = FakeContext("这不是 JSON")
+
+        refined = await refine_chunk_analyses(
+            context,
+            make_settings(),
+            summary,
+            summary.chunks,
+            [ChunkAnalysis(1, 3, analysis("武器调整", "第一项"))],
+            merge_error="程序合并失败",
+        )
+
+        self.assertEqual(context.calls, 1)
+        self.assertIn("程序合并和二次分析均失败", refined["summary"])
+
+    def test_chunk_refinement_payload_contains_raw_json_context(self) -> None:
+        summary = make_summary()
+        payload = build_chunk_refinement_payload(
+            summary,
+            summary.chunks,
+            [ChunkAnalysis(1, 3, analysis("武器调整", "第一项"), error="提醒", raw_text='{"summary":"第一项"}')],
+            merge_error="程序合并失败",
+        )
+
+        self.assertEqual(payload["merge_error"], "程序合并失败")
+        self.assertEqual(payload["chunks"][0]["analysis"]["summary"], "第一项")
+        self.assertEqual(payload["chunks"][0]["raw_text"], '{"summary":"第一项"}')
+        self.assertEqual(payload["chunks"][0]["files"], ["a.blkx"])
 
 
 if __name__ == "__main__":
