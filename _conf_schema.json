@@ -15,7 +15,7 @@
   "target_groups": {
     "type": "list",
     "description": "推送群聊列表",
-    "hint": "每项填写一个 unified_msg_origin。可在目标群发送 /wtup_bind 获取当前群的 unified_msg_origin。",
+    "hint": "每项填写一个群号或 unified_msg_origin。填写纯群号时会通过 OneBot send_group_msg 发送；也可在目标群发送 /wtup_bind 获取当前群的 unified_msg_origin。",
     "default": [],
     "items": {
       "type": "string"

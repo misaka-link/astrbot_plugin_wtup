@@ -18,7 +18,7 @@ mode: commit
 
 - `provider_id`：模型 Provider ID，留空使用默认模型。
 - `timeout_seconds`：单个分片的大模型分析超时时间，单位秒。
-- `target_groups`：推送群聊列表，每项一个 `unified_msg_origin`。
+- `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
 - `github_token`：GitHub Personal Access Token，可选。
@@ -45,7 +45,7 @@ https://github.com/settings/tokens
 /wtup_bind
 ```
 
-获取当前群聊的 `unified_msg_origin`，复制到后台配置的推送群聊列表。
+获取当前群聊的 `unified_msg_origin`。推送群聊列表也可以直接填写群号。
 
 ```text
 /wtup_check

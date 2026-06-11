@@ -107,7 +107,7 @@ class WTUpdatePlugin(Star):
         yield event.plain_result(
             "当前会话 unified_msg_origin：\n"
             f"{origin}\n\n"
-            "把这一项添加到后台配置的“推送群聊列表”。"
+            "后台配置的“推送群聊列表”支持填写群号或 unified_msg_origin，每行一个。"
         )
 
     @filter.command("wtup_check")
@@ -118,7 +118,7 @@ class WTUpdatePlugin(Star):
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
         force_latest = force_all or "强制" in args or "force" in args_lower
         try:
-            result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all)
+            result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all, event=event)
         except Exception as exc:
             logger.exception("[%s] 手动检查失败: %s", PLUGIN_NAME, exc)
             yield event.plain_result(f"检查失败：{exc}")
@@ -174,7 +174,14 @@ class WTUpdatePlugin(Star):
                 logger.exception("[%s] 定时检查失败: %s", PLUGIN_NAME, exc)
             await asyncio.sleep(self.settings.monitor_interval_minutes * 60)
 
-    async def check_once(self, *, manual: bool, force_latest: bool, send_to_groups: bool) -> dict[str, Any]:
+    async def check_once(
+        self,
+        *,
+        manual: bool,
+        force_latest: bool,
+        send_to_groups: bool,
+        event: AstrMessageEvent | None = None,
+    ) -> dict[str, Any]:
         async with self._check_lock:
             logger.info("[%s] ========== 开始执行检查%s ==========", PLUGIN_NAME, "（手动）" if manual else "（定时）")
 
@@ -264,6 +271,7 @@ class WTUpdatePlugin(Star):
                         self.settings.target_groups,
                         image_path=image_path,
                         fallback_text=fallback_text,
+                        event=event,
                     )
                     sent_count += ok
                     failed_count += failed
