@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ try:
     from .wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from .wtup.github_client import GitHubClient, GitHubRequestError
     from .wtup.notifier import push_report
+    from .wtup.report_log import build_report_log_filename, sanitize_filename
     from .wtup.renderer import build_report_html, render_plain_text, render_report_image
     from .wtup.state_store import StateStore
 except ImportError:
@@ -35,6 +37,7 @@ except ImportError:
     from wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from wtup.github_client import GitHubClient, GitHubRequestError
     from wtup.notifier import push_report
+    from wtup.report_log import build_report_log_filename, sanitize_filename
     from wtup.renderer import build_report_html, render_plain_text, render_report_image
     from wtup.state_store import StateStore
 
@@ -83,6 +86,7 @@ class WTUpdatePlugin(Star):
         self.data_dir = self._resolve_data_dir()
         self.state_store = StateStore(self.data_dir / "state.json")
         self.image_dir = self.data_dir / "images"
+        self.log_dir = self.data_dir / "logs"
         self.template_path = Path(__file__).resolve().parent / "templates" / "help_miku.html"
         self._task: asyncio.Task | None = None
         self._check_lock = asyncio.Lock()
@@ -306,9 +310,16 @@ class WTUpdatePlugin(Star):
                 files=summary.files,
                 patch_chars=sum(chunk.patch_chars for chunk in summary.chunks),
             )
-            html_text = build_report_html(self.template_path, summary, report_chunk, analysis)
+            html_text = build_report_html(
+                self.template_path,
+                summary,
+                report_chunk,
+                analysis,
+                footer_note=self.settings.footer_note,
+            )
             image_path = await render_report_image(self, html_text, self.image_dir)
             fallback_text = render_plain_text(summary, report_chunk, analysis)
+            log_path = self._save_report_log(summary, analysis, fallback_text, image_path=image_path)
 
             if send_to_groups and self.settings.target_groups:
                 logger.info("[%s] 推送合并报告到 %d 个群聊...", PLUGIN_NAME, len(self.settings.target_groups))
@@ -322,6 +333,17 @@ class WTUpdatePlugin(Star):
                 sent_count += ok
                 failed_count += failed
                 logger.info("[%s] 推送完成合并报告: 成功 %d，失败 %d", PLUGIN_NAME, ok, failed)
+
+            self._save_task_state(
+                summary=summary,
+                analysis=analysis,
+                log_path=log_path,
+                image_path=image_path,
+                manual=manual,
+                sent_to_groups=bool(send_to_groups and self.settings.target_groups),
+                sent_count=sent_count,
+                failed_count=failed_count,
+            )
 
             if not manual or send_to_groups:
                 self._save_seen_commit(latest.sha)
@@ -339,14 +361,81 @@ class WTUpdatePlugin(Star):
             return {"message": fallback_text or message}
 
     def _save_seen_commit(self, sha: str) -> None:
-        self.state_store.update_repo_state(
-            REPO_FULL_NAME,
+        self._update_repo_state(
             {
                 "last_commit_sha": sha,
                 "last_checked_at": time.time(),
                 "branch": BRANCH_NAME,
-            },
+            }
         )
+
+    def _save_report_log(
+        self,
+        summary: Any,
+        analysis: dict[str, Any],
+        fallback_text: str,
+        *,
+        image_path: Path | None,
+    ) -> Path:
+        title = str(analysis.get("report_title") or "").strip()
+        filename = sanitize_filename(build_report_log_filename(title))
+        output_path = self.log_dir / filename
+        generated_at = datetime.now()
+        header = [
+            f"生成时间: {generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"仓库: {REPO_FULL_NAME}",
+            f"分支: {BRANCH_NAME}",
+            f"提交范围: {short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}",
+        ]
+        if summary.compare_url:
+            header.append(f"Compare: {summary.compare_url}")
+        if image_path:
+            header.append(f"图片: {image_path}")
+        header.extend(["", str(fallback_text or "").strip(), ""])
+
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("\n".join(header), encoding="utf-8")
+        logger.info("[%s] 已保存最终报告日志: %s", PLUGIN_NAME, output_path)
+        return output_path
+
+    def _save_task_state(
+        self,
+        *,
+        summary: Any,
+        analysis: dict[str, Any],
+        log_path: Path,
+        image_path: Path | None,
+        manual: bool,
+        sent_to_groups: bool,
+        sent_count: int,
+        failed_count: int,
+    ) -> None:
+        now = time.time()
+        task = {
+            "repo": REPO_FULL_NAME,
+            "branch": BRANCH_NAME,
+            "base_sha": summary.base_sha,
+            "head_sha": summary.head_sha,
+            "report_title": str(analysis.get("report_title") or "").strip(),
+            "log_path": str(log_path),
+            "image_path": str(image_path) if image_path else "",
+            "compare_url": summary.compare_url,
+            "manual": manual,
+            "sent_to_groups": sent_to_groups,
+            "target_groups": list(self.settings.target_groups) if sent_to_groups else [],
+            "sent_count": sent_count,
+            "failed_count": failed_count,
+            "generated_at": now,
+        }
+        updates: dict[str, Any] = {"last_generated_task": task}
+        if sent_to_groups:
+            updates["last_pushed_task"] = {**task, "pushed_at": now}
+        self._update_repo_state(updates)
+
+    def _update_repo_state(self, updates: dict[str, Any]) -> None:
+        repo_state = self.state_store.get_repo_state(REPO_FULL_NAME)
+        repo_state.update(updates)
+        self.state_store.update_repo_state(REPO_FULL_NAME, repo_state)
 
     def _resolve_data_dir(self) -> Path:
         try:

@@ -11,6 +11,7 @@ REPO_NAME = "War-Thunder-Datamine"
 REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"
 BRANCH_NAME = "master"
 DEFAULT_INTERVAL_MINUTES = 30
+DEFAULT_FOOTER_NOTE = "[gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine)"
 DEFAULT_ANALYSIS_PROMPT = (
     "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
     "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
@@ -32,6 +33,7 @@ class PluginConfig:
     github_token: str
     max_files_per_report: int
     max_patch_chars: int
+    footer_note: str = DEFAULT_FOOTER_NOTE
 
 
 def config_get(config: Any, key: str, default: Any = None) -> Any:
@@ -94,6 +96,7 @@ def load_config(config: Any) -> PluginConfig:
         model_concurrency=as_int(config_get(config, "model_concurrency", 1), 1, minimum=1),
         analysis_prompt=str(config_get(config, "analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or DEFAULT_ANALYSIS_PROMPT),
         enable_second_pass_analysis=as_bool(config_get(config, "enable_second_pass_analysis", False)),
+        footer_note=str(config_get(config, "footer_note", DEFAULT_FOOTER_NOTE) or DEFAULT_FOOTER_NOTE),
         target_groups=split_lines(config_get(config, "target_groups", "")),
         monitor_interval_minutes=as_int(
             config_get(config, "monitor_interval_minutes", DEFAULT_INTERVAL_MINUTES),

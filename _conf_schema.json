@@ -45,6 +45,12 @@
     "hint": "开启后，当 diff 被拆成多次模型请求时，会先合并各分片分析结果，再额外请求一次模型整理最终报告。关闭时使用程序内置规则直接合并。",
     "default": false
   },
+  "footer_note": {
+    "type": "text",
+    "description": "图片左下角文本",
+    "hint": "显示在报告图片左下角，支持多行和简单 Markdown 链接，例如 [文字](https://example.com)。",
+    "default": "[gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine)"
+  },
   "github_token": {
     "type": "string",
     "description": "GitHub Personal Access Token",

@@ -460,6 +460,17 @@
       font-weight: 750;
     }
 
+    .footer-note {
+      min-width: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .footer-note a {
+      color: #267f79;
+      text-decoration: none;
+    }
+
     .pill {
       padding: 8px 12px;
       border-radius: 999px;
@@ -524,7 +535,7 @@
     </div>
 
     <div class="footer">
-      <div>{{ footer_note }}</div>
+      <div class="footer-note">{{ footer_note }}</div>
       <div class="pill">{{ footer_badge }}</div>
     </div>
   </main>

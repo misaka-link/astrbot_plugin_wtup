@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME
 from .diff_collector import DiffChunk, DiffSummary, short_sha
 
 
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
 RENDER_OPTIONS = {
     "width": 1280,
     "height": 920,
@@ -26,7 +29,14 @@ RENDER_OPTIONS = {
 }
 
 
-def build_report_html(template_path: Path, summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
+def build_report_html(
+    template_path: Path,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    analysis: dict[str, Any],
+    *,
+    footer_note: str = "",
+) -> str:
     template = template_path.read_text(encoding="utf-8")
     importance = str(analysis.get("importance") or "中")
     report_title = report_display_title(summary, chunk, analysis)
@@ -46,7 +56,7 @@ def build_report_html(template_path: Path, summary: DiffSummary, chunk: DiffChun
         "{{ article_html }}": render_ai_analysis(analysis),
         "{{ table_html }}": "",
         "{{ sections_html }}": "",
-        "{{ footer_note }}": html.escape(f"Source: {summary.compare_url or 'GitHub compare API'}"),
+        "{{ footer_note }}": render_footer_note(footer_note),
         "{{ footer_badge }}": html.escape(time.strftime("%Y-%m-%d %H:%M:%S")),
     }
     for needle, value in replacements.items():
@@ -258,6 +268,23 @@ def render_file_table(files: list[dict[str, Any]]) -> str:
 def render_badges(items: list[str]) -> str:
     normalized = [str(item).strip() for item in items if str(item or "").strip()]
     return "".join(f'<span class="badge">{html.escape(item)}</span>' for item in normalized[:10])
+
+
+def render_footer_note(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    parts = []
+    pos = 0
+    for match in MARKDOWN_LINK_RE.finditer(raw):
+        parts.append(html.escape(raw[pos : match.start()]))
+        label = html.escape(match.group(1).strip())
+        url = html.escape(match.group(2).strip(), quote=True)
+        parts.append(f'<a href="{url}">{label}</a>')
+        pos = match.end()
+    parts.append(html.escape(raw[pos:]))
+    return "".join(parts).replace("\n", "<br>")
 
 
 def render_paragraphs(items: list[str]) -> str:
