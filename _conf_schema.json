@@ -33,6 +33,12 @@
     "hint": "用于指导模型如何分析 War Thunder Datamine 的 commit diff。",
     "default": "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，写作 英文名(中文名)，如载具名称有特殊字符也要保留。请注意改动可能并非全部游戏模式，此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。必须遵守后续系统给出的 JSON 输出格式要求。"
   },
+  "enable_second_pass_analysis": {
+    "type": "bool",
+    "description": "是否启用二次分析",
+    "hint": "开启后，当 diff 被拆成多次模型请求时，会先合并各分片分析结果，再额外请求一次模型整理最终报告。关闭时使用程序内置规则直接合并。",
+    "default": false
+  },
   "github_token": {
     "type": "string",
     "description": "GitHub Personal Access Token",

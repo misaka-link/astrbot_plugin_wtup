@@ -10,7 +10,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 try:
-    from .wtup.analyzer import analyze_chunks, merge_chunk_analyses
+    from .wtup.analyzer import analyze_chunks, merge_chunk_analyses, refine_merged_analysis
     from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from .wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from .wtup.github_client import GitHubClient, GitHubRequestError
@@ -18,7 +18,7 @@ try:
     from .wtup.renderer import build_report_html, render_plain_text, render_report_image
     from .wtup.state_store import StateStore
 except ImportError:
-    from wtup.analyzer import analyze_chunks, merge_chunk_analyses
+    from wtup.analyzer import analyze_chunks, merge_chunk_analyses, refine_merged_analysis
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from wtup.github_client import GitHubClient, GitHubRequestError
@@ -103,6 +103,7 @@ class WTUpdatePlugin(Star):
             f"推送目标: {len(self.settings.target_groups)} 个",
             f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
             f"单次模型请求字符限制: {self.settings.max_patch_chars or '不限制'}",
+            f"二次分析: {'开启' if self.settings.enable_second_pass_analysis else '关闭'}",
         ]
         await self._react_to_command_done(event)
         yield event.plain_result("\n".join(lines))
@@ -267,6 +268,10 @@ class WTUpdatePlugin(Star):
             logger.info("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
             analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
+            second_pass_enabled = self.settings.enable_second_pass_analysis and len(summary.chunks) > 1
+            if second_pass_enabled:
+                logger.info("[%s] 已启用二次分析，正在整理合并报告...", PLUGIN_NAME)
+                analysis = await refine_merged_analysis(self.context, self.settings, summary, analysis)
             report_chunk = DiffChunk(
                 index=1,
                 total=1,
@@ -295,7 +300,8 @@ class WTUpdatePlugin(Star):
 
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
-                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks)} 次，已合并为 1 份报告。"
+                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if second_pass_enabled else 0)} 次，"
+                f"已合并为 1 份报告。"
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"

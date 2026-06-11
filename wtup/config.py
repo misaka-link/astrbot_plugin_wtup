@@ -25,6 +25,7 @@ class PluginConfig:
     provider_id: str
     timeout_seconds: int
     analysis_prompt: str
+    enable_second_pass_analysis: bool
     target_groups: list[str]
     monitor_interval_minutes: int
     github_token: str
@@ -61,6 +62,19 @@ def as_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     return parsed
 
 
+def as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enable", "enabled", "开启", "是"}:
+        return True
+    if text in {"0", "false", "no", "off", "disable", "disabled", "关闭", "否"}:
+        return False
+    return default
+
+
 def split_lines(value: Any) -> list[str]:
     if value is None:
         return []
@@ -77,6 +91,7 @@ def load_config(config: Any) -> PluginConfig:
         provider_id=str(config_get(config, "provider_id", "") or "").strip(),
         timeout_seconds=as_int(config_get(config, "timeout_seconds", 120), 120, minimum=1),
         analysis_prompt=str(config_get(config, "analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or DEFAULT_ANALYSIS_PROMPT),
+        enable_second_pass_analysis=as_bool(config_get(config, "enable_second_pass_analysis", False)),
         target_groups=split_lines(config_get(config, "target_groups", "")),
         monitor_interval_minutes=as_int(
             config_get(config, "monitor_interval_minutes", DEFAULT_INTERVAL_MINUTES),

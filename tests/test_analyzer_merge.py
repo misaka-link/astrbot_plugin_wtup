@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from wtup.analyzer import ChunkAnalysis, merge_chunk_analyses, safe_normalize_analysis
+from wtup.analyzer import ChunkAnalysis, merge_chunk_analyses, refine_merged_analysis, safe_normalize_analysis
+from wtup.config import PluginConfig, load_config
 from wtup.diff_collector import DiffChunk, DiffSummary
 from wtup.renderer import report_update_subtitle
 
@@ -89,6 +90,90 @@ class AnalyzerMergeTest(unittest.TestCase):
         subtitle = report_update_subtitle(chunk, {"summary": "本次更新包含 1 个提交、3 个文件。"})
 
         self.assertEqual(subtitle, "本次更新包含 1 个提交、3 个文件。")
+
+
+class ConfigTest(unittest.TestCase):
+    def test_second_pass_config_defaults_to_disabled(self) -> None:
+        settings = load_config({})
+
+        self.assertFalse(settings.enable_second_pass_analysis)
+
+    def test_second_pass_config_accepts_bool_like_values(self) -> None:
+        settings = load_config({"enable_second_pass_analysis": "开启"})
+
+        self.assertTrue(settings.enable_second_pass_analysis)
+
+
+class FakeContext:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls = 0
+
+    async def llm_generate(self, **kwargs):
+        self.calls += 1
+        return self.response
+
+
+def make_settings() -> PluginConfig:
+    return PluginConfig(
+        provider_id="",
+        timeout_seconds=5,
+        analysis_prompt="请分析更新。",
+        enable_second_pass_analysis=True,
+        target_groups=[],
+        monitor_interval_minutes=30,
+        github_token="",
+        max_files_per_report=1,
+        max_patch_chars=0,
+    )
+
+
+class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
+    async def test_refine_merged_analysis_uses_valid_model_json(self) -> None:
+        summary = make_summary()
+        merged = merge_chunk_analyses(
+            summary,
+            summary.chunks,
+            [ChunkAnalysis(1, 3, analysis("武器调整", "第一项"))],
+        )
+        context = FakeContext(
+            """
+            {
+              "report_title": "2.56.0.38->2.56.0.39",
+              "summary": "二次整理摘要",
+              "importance": "高",
+              "update_sections": [{"title": "武器调整", "items": [{"text": "二次整理条目", "children": []}]}],
+              "ai_analysis": {
+                "changed_content": ["二次整理条目"],
+                "player_impact": ["需要关注"],
+                "uncertainties": [],
+                "recommendation": "建议关注"
+              },
+              "tags": ["武器调整"]
+            }
+            """
+        )
+
+        refined = await refine_merged_analysis(context, make_settings(), summary, merged)
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(refined["summary"], "二次整理摘要")
+        self.assertEqual(refined["importance"], "高")
+
+    async def test_refine_merged_analysis_falls_back_to_merged_result_on_invalid_json(self) -> None:
+        summary = make_summary()
+        merged = merge_chunk_analyses(
+            summary,
+            summary.chunks,
+            [ChunkAnalysis(1, 3, analysis("武器调整", "第一项"))],
+        )
+        context = FakeContext("这不是 JSON")
+
+        refined = await refine_merged_analysis(context, make_settings(), summary, merged)
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(refined["summary"], merged["summary"])
+        self.assertEqual(refined["update_sections"], merged["update_sections"])
 
 
 if __name__ == "__main__":

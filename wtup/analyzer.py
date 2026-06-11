@@ -87,8 +87,78 @@ JSON 字段如下：
 """.strip()
 
 
-async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
-    prompt = build_prompt(settings, summary, chunk)
+def build_refinement_prompt(settings: PluginConfig, summary: DiffSummary, merged_analysis: dict[str, Any]) -> str:
+    merged_json = json.dumps(normalize_analysis(merged_analysis), ensure_ascii=False, indent=2)
+    return f"""
+{settings.analysis_prompt}
+
+你正在整理固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新最终报告。
+
+前面已经按 diff 分片完成多次模型分析，程序也已经把分片分析结果初步合并为 JSON。
+你的任务不是重新分析原始 diff，而是基于这个初步合并 JSON 做二次整理，生成更适合最终推送的报告。
+
+输出协议：
+1. 只能输出一个 JSON object。
+2. 不要输出 Markdown 代码块。
+3. 不要输出解释、前言、后记。
+4. JSON 必须能被 json.loads 直接解析。
+5. 所有字符串必须使用双引号。
+6. 不允许尾随逗号。
+7. 不确定的信息写入 uncertainties，不要编造。
+
+JSON 字段如下：
+{{
+  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
+  "summary": "一句话总结本次更新中最重要的变化",
+  "importance": "低/中/高",
+  "update_sections": [
+    {{
+      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
+      "items": [
+        {{
+          "text": "条目内容",
+          "children": [
+            {{"text": "子条目内容", "children": []}}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "ai_analysis": {{
+    "changed_content": ["AI 分析出的实际改动内容"],
+    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
+    "uncertainties": ["不确定点、需要继续观察的地方"],
+    "recommendation": "是否建议玩家关注/更新，以及原因"
+  }},
+  "tags": ["标签1", "标签2"]
+}}
+
+要求：
+1. 用中文。
+2. 只能使用初步合并 JSON 中已有的信息，不要新增未经输入支持的内容。
+3. 去重重复条目，合并含义相近的条目。
+4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
+5. update_sections 使用中文标题，并保留条目层级。
+6. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
+7. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
+8. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
+9. 如果初步合并 JSON 中有分析失败或信息不足的内容，要保留到 uncertainties。
+
+提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
+提交数: {summary.total_commits}
+文件数: {summary.total_files}
+初步合并 JSON:
+{merged_json}
+""".strip()
+
+
+async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
+    response = await request_llm(context, settings, prompt)
+    text = extract_response_text(response)
+    return safe_normalize_analysis(text)
+
+
+async def request_llm(context: Any, settings: PluginConfig, prompt: str) -> Any:
     llm_kwargs: dict[str, Any] = {"prompt": prompt}
 
     if settings.provider_id:
@@ -102,9 +172,31 @@ async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSumma
         else:
             logger.warning("[%s] Provider %s 不存在，改用默认模型", PLUGIN_NAME, settings.provider_id)
 
-    response = await asyncio.wait_for(context.llm_generate(**llm_kwargs), timeout=settings.timeout_seconds)
-    text = extract_response_text(response)
-    return safe_normalize_analysis(text)
+    return await asyncio.wait_for(context.llm_generate(**llm_kwargs), timeout=settings.timeout_seconds)
+
+
+async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
+    prompt = build_prompt(settings, summary, chunk)
+    return await generate_analysis_from_prompt(context, settings, prompt)
+
+
+async def refine_merged_analysis(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    merged_analysis: dict[str, Any],
+) -> dict[str, Any]:
+    prompt = build_refinement_prompt(settings, summary, merged_analysis)
+    try:
+        response = await request_llm(context, settings, prompt)
+        text = extract_response_text(response)
+        parsed = parse_analysis_json(text)
+        if parsed is None:
+            raise ValueError("二次分析模型输出不是有效 JSON")
+        return parsed
+    except Exception as exc:
+        logger.warning("[%s] 二次分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
+        return normalize_analysis(merged_analysis)
 
 
 async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSummary) -> list[ChunkAnalysis]:

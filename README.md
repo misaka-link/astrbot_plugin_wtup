@@ -21,6 +21,7 @@ mode: commit
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
+- `enable_second_pass_analysis`：是否启用二次分析，默认关闭。
 - `github_token`：GitHub Personal Access Token，可选。
 - `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
 - `max_patch_chars`：每次模型请求最大 diff 字符数，默认 0 表示不限制。
@@ -70,6 +71,10 @@ https://github.com/settings/tokens
 `max_files_per_report` 和 `max_patch_chars` 默认都是 `0`，表示不限制。
 
 如果其中任意一个设置为大于 `0`，插件会按文件数和 diff 字符数拆分模型请求。每次请求都会单独调用一次模型，所有分析结果会按原始文件顺序合并成一份报告，最终只生成一张图片并推送一次。
+
+`enable_second_pass_analysis` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
+
+开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次模型对合并结果做二次整理。二次分析只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果二次分析失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
 
 ## 首次运行
 
