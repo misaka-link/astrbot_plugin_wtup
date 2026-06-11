@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,7 +12,13 @@ from typing import Any
 from .config import PLUGIN_NAME, PLUGIN_VERSION
 
 
+_logger = logging.getLogger(PLUGIN_NAME)
+
+
 GITHUB_API_BASE = "https://api.github.com"
+
+
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 class GitHubRequestError(RuntimeError):
@@ -31,9 +39,10 @@ class CommitRef:
 
 
 class GitHubClient:
-    def __init__(self, token: str = "", timeout: int = 30):
+    def __init__(self, token: str = "", timeout: int = 30, max_retries: int = 3):
         self.token = str(token or "").strip()
         self.timeout = timeout
+        self.max_retries = max(0, max_retries)
 
     def get_latest_commit(self, repo: str, branch: str) -> CommitRef:
         payload = self._request_json(f"/repos/{repo}/commits/{urllib.parse.quote(branch, safe='')}")
@@ -55,14 +64,30 @@ class GitHubClient:
 
     def _request_json(self, path: str) -> dict[str, Any]:
         url = f"{GITHUB_API_BASE}{path}"
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"{PLUGIN_NAME}/{PLUGIN_VERSION}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        _logger.info("[%s] API 请求: %s", PLUGIN_NAME, path)
+        result = self._request_json_with_retry(url, self._api_headers())
+        _logger.info("[%s] API 请求完成: %s", PLUGIN_NAME, path)
+        return result
 
+    def _request_json_with_retry(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
+        last_error: GitHubRequestError | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt > 0:
+                wait = 2 ** (attempt - 1)
+                _logger.warning(
+                    "[%s] 请求失败 (status=%s)，%d 秒后重试 (第 %d/%d 次)...",
+                    PLUGIN_NAME, last_error.status_code if last_error else "network", wait, attempt, self.max_retries,
+                )
+                time.sleep(wait)
+            try:
+                return self._do_request_json(url, headers)
+            except GitHubRequestError as exc:
+                if exc.status_code is not None and exc.status_code not in RETRYABLE_STATUSES:
+                    raise
+                last_error = exc
+        raise last_error or GitHubRequestError(message="retry exhausted")
+
+    def _do_request_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -82,14 +107,34 @@ class GitHubClient:
             raise GitHubRequestError(message="GitHub returned unexpected payload")
         return payload
 
-    def _request_text(self, url: str, *, accept: str) -> str:
+    def _request_text(self, raw_url: str, *, accept: str) -> str:
         headers = {
             "Accept": accept,
             "User-Agent": f"{PLUGIN_NAME}/{PLUGIN_VERSION}",
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        return self._request_text_with_retry(raw_url, headers)
 
+    def _request_text_with_retry(self, url: str, headers: dict[str, str]) -> str:
+        last_error: GitHubRequestError | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt > 0:
+                wait = 2 ** (attempt - 1)
+                _logger.warning(
+                    "[%s] 请求失败 (status=%s)，%d 秒后重试 (第 %d/%d 次)...",
+                    PLUGIN_NAME, last_error.status_code if last_error else "network", wait, attempt, self.max_retries,
+                )
+                time.sleep(wait)
+            try:
+                return self._do_request_text(url, headers)
+            except GitHubRequestError as exc:
+                if exc.status_code is not None and exc.status_code not in RETRYABLE_STATUSES:
+                    raise
+                last_error = exc
+        raise last_error or GitHubRequestError(message="retry exhausted")
+
+    def _do_request_text(self, url: str, headers: dict[str, str]) -> str:
         request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -100,6 +145,16 @@ class GitHubClient:
             raise GitHubRequestError(exc.code, self._extract_error_message(body)) from exc
         except urllib.error.URLError as exc:
             raise GitHubRequestError(message=str(exc.reason or exc)) from exc
+
+    def _api_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"{PLUGIN_NAME}/{PLUGIN_VERSION}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
 
     @staticmethod
     def _extract_error_message(body: str) -> str:
