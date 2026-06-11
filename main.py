@@ -27,6 +27,30 @@ except ImportError:
     from wtup.state_store import StateStore
 
 
+COMMAND_RECEIVED_EMOJI_ID = "289"
+COMMAND_DONE_EMOJI_ID = "124"
+
+
+def _get_event_message_id(event: AstrMessageEvent) -> str:
+    msg_obj = getattr(event, "message_obj", None)
+    message_id = getattr(msg_obj, "message_id", None)
+    if message_id is None:
+        raw_message = getattr(msg_obj, "raw_message", None)
+        if isinstance(raw_message, dict):
+            message_id = raw_message.get("message_id")
+    return str(message_id or "").strip()
+
+
+def _call_target(event: AstrMessageEvent) -> Any | None:
+    bot = getattr(event, "bot", None) or getattr(event, "client", None)
+    if hasattr(bot, "call_action"):
+        return bot
+    api = getattr(bot, "api", None)
+    if hasattr(api, "call_action"):
+        return api
+    return None
+
+
 @register(PLUGIN_NAME, "御坂_20001", "War Thunder Datamine 更新监控插件", PLUGIN_VERSION)
 class WTUpdatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -53,6 +77,7 @@ class WTUpdatePlugin(Star):
 
     @filter.command("wtup_status")
     async def wtup_status(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
         repo_state = self.state_store.get_repo_state(REPO_FULL_NAME)
         last_sha = str(repo_state.get("last_commit_sha") or "")
         last_checked_at = repo_state.get("last_checked_at")
@@ -68,14 +93,17 @@ class WTUpdatePlugin(Star):
             f"文件限制: {self.settings.max_files_per_report or '不限制'}",
             f"字符限制: {self.settings.max_patch_chars or '不限制'}",
         ]
+        await self._react_to_command_done(event)
         yield event.plain_result("\n".join(lines))
 
     @filter.command("wtup_bind")
     async def wtup_bind(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
         origin = getattr(event, "unified_msg_origin", "") or ""
         if not origin:
             yield event.plain_result("当前会话没有 unified_msg_origin，无法绑定。")
             return
+        await self._react_to_command_done(event)
         yield event.plain_result(
             "当前会话 unified_msg_origin：\n"
             f"{origin}\n\n"
@@ -84,6 +112,7 @@ class WTUpdatePlugin(Star):
 
     @filter.command("wtup_check")
     async def wtup_check(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
         args = str(getattr(event, "message_str", "") or "")
         args_lower = args.lower()
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
@@ -95,10 +124,44 @@ class WTUpdatePlugin(Star):
             yield event.plain_result(f"检查失败：{exc}")
             return
 
+        await self._react_to_command_done(event)
         if result.get("image_path") and not force_all:
             yield event.image_result(str(result["image_path"]))
             return
         yield event.plain_result(str(result.get("message") or "检查完成。"))
+
+    async def _react_to_command(self, event: AstrMessageEvent, emoji_id: str, *, set_reaction: bool = True) -> bool:
+        message_id = _get_event_message_id(event)
+        if not message_id:
+            return False
+
+        try:
+            message_id_int = int(message_id)
+        except ValueError:
+            return False
+
+        call_target = _call_target(event)
+        if call_target is None:
+            return False
+
+        try:
+            await call_target.call_action(
+                "set_msg_emoji_like",
+                message_id=message_id_int,
+                emoji_id=emoji_id,
+                emoji_type="1",
+                set=set_reaction,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("[%s] 更新表情失败，可能当前平台或协议端不支持: %s", PLUGIN_NAME, exc)
+            return False
+
+    async def _react_to_command_received(self, event: AstrMessageEvent) -> bool:
+        return await self._react_to_command(event, COMMAND_RECEIVED_EMOJI_ID)
+
+    async def _react_to_command_done(self, event: AstrMessageEvent) -> bool:
+        return await self._react_to_command(event, COMMAND_DONE_EMOJI_ID)
 
     async def _monitor_loop(self):
         await asyncio.sleep(5)
