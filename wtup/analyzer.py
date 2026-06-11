@@ -12,22 +12,15 @@ except ModuleNotFoundError:
 
     logger = logging.getLogger(__name__)
 
-from .config import PLUGIN_NAME, PluginConfig, thinking_token_budget
+from .config import PLUGIN_NAME, PluginConfig
 from .diff_collector import DiffChunk, DiffSummary, render_chunk_input
 
 
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
-    budget = thinking_token_budget(settings)
-    if budget <= 0:
-        thinking_hint = "不要输出推理过程，直接给出结论。"
-    else:
-        thinking_hint = f"内部分析时最多使用约 {budget} 个思考 token；不要输出推理过程，只输出结果。"
-
     return f"""
 {settings.analysis_prompt}
 
 你正在分析固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新。
-{thinking_hint}
 
 请只输出 JSON，不要使用 Markdown 代码块。JSON 字段如下：
 {{

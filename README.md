@@ -17,8 +17,6 @@ mode: commit
 后台配置项：
 
 - `provider_id`：模型 Provider ID，留空使用默认模型。
-- `thinking_level`：最大思考 token 等级，支持 `off`、`low`、`medium`、`high`、`custom`。
-- `custom_thinking_tokens`：自定义思考 token 数，`thinking_level=custom` 时生效。
 - `timeout_seconds`：单个分片的大模型分析超时时间，单位秒。
 - `target_groups`：推送群聊列表，每行一个 `unified_msg_origin`。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
@@ -70,4 +68,3 @@ https://github.com/settings/tokens
 ## 首次运行
 
 定时任务首次启动时会把当前最新 commit 记录为基线，不推送历史更新，避免刷屏。之后只有检测到新的 commit 才会分析和推送。
-

@@ -20,8 +20,6 @@ DEFAULT_ANALYSIS_PROMPT = (
 @dataclass(frozen=True)
 class PluginConfig:
     provider_id: str
-    thinking_level: str
-    custom_thinking_tokens: int
     timeout_seconds: int
     analysis_prompt: str
     target_groups: list[str]
@@ -71,16 +69,9 @@ def split_lines(value: Any) -> list[str]:
     return [str(item).strip() for item in candidates if str(item or "").strip()]
 
 
-def normalize_thinking_level(value: Any) -> str:
-    level = str(value or "medium").strip().lower()
-    return level if level in {"off", "low", "medium", "high", "custom"} else "medium"
-
-
 def load_config(config: Any) -> PluginConfig:
     return PluginConfig(
         provider_id=str(config_get(config, "provider_id", "") or "").strip(),
-        thinking_level=normalize_thinking_level(config_get(config, "thinking_level", "medium")),
-        custom_thinking_tokens=as_int(config_get(config, "custom_thinking_tokens", 4096), 4096, minimum=0),
         timeout_seconds=as_int(config_get(config, "timeout_seconds", 120), 120, minimum=1),
         analysis_prompt=str(config_get(config, "analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or DEFAULT_ANALYSIS_PROMPT),
         target_groups=split_lines(config_get(config, "target_groups", "")),
@@ -93,16 +84,3 @@ def load_config(config: Any) -> PluginConfig:
         max_files_per_report=as_int(config_get(config, "max_files_per_report", 0), 0, minimum=0),
         max_patch_chars=as_int(config_get(config, "max_patch_chars", 0), 0, minimum=0),
     )
-
-
-def thinking_token_budget(settings: PluginConfig) -> int:
-    if settings.thinking_level == "off":
-        return 0
-    if settings.thinking_level == "low":
-        return 1024
-    if settings.thinking_level == "medium":
-        return 4096
-    if settings.thinking_level == "high":
-        return 8192
-    return max(0, settings.custom_thinking_tokens)
-

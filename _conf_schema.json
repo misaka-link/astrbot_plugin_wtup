@@ -5,25 +5,6 @@
     "hint": "留空使用 AstrBot 当前默认模型；填写 AstrBot 后台中模型提供商的 Provider ID。",
     "default": ""
   },
-  "thinking_level": {
-    "type": "string",
-    "description": "最大思考 token 等级",
-    "options": [
-      "off",
-      "low",
-      "medium",
-      "high",
-      "custom"
-    ],
-    "hint": "插件会把该等级写入分析提示词中：off=0，low=1024，medium=4096，high=8192，custom 使用下面的自定义数字。",
-    "default": "medium"
-  },
-  "custom_thinking_tokens": {
-    "type": "int",
-    "description": "自定义最大思考 token",
-    "hint": "thinking_level=custom 时使用；0 表示不要求思考预算。",
-    "default": 4096
-  },
   "timeout_seconds": {
     "type": "int",
     "description": "大模型分析最大超时时间",
@@ -67,4 +48,3 @@
     "default": 0
   }
 }
-
