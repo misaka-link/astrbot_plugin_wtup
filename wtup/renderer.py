@@ -40,7 +40,7 @@ def build_report_html(template_path: Path, summary: DiffSummary, chunk: DiffChun
         "{{ repo_name }}": REPO_FULL_NAME,
         "{{ branch_name }}": BRANCH_NAME,
         "{{ commit_range }}": f"{short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}",
-        "{{ change_stats }}": f"{len(chunk.files)}/{summary.total_files} 文件 · {chunk.patch_chars} 字符",
+        "{{ change_stats }}": render_change_stats(summary, chunk),
         "{{ summary_html }}": render_update_content(report_title, update_subtitle, analysis),
         "{{ badges_html }}": render_badges([f"重要度 {importance}", *list(analysis.get("tags") or [])]),
         "{{ article_html }}": render_ai_analysis(analysis),
@@ -108,6 +108,12 @@ def render_plain_text(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str
     return "\n".join(lines)
 
 
+def render_change_stats(summary: DiffSummary, chunk: DiffChunk) -> str:
+    if len(chunk.files) >= summary.total_files:
+        return f"{summary.total_files} 文件 · {chunk.patch_chars} 字符"
+    return f"{len(chunk.files)}/{summary.total_files} 文件 · {chunk.patch_chars} 字符"
+
+
 def report_display_title(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
     title = str(analysis.get("report_title") or "").strip()
     if not title:
@@ -117,8 +123,6 @@ def report_display_title(summary: DiffSummary, chunk: DiffChunk, analysis: dict[
 
 def report_update_subtitle(chunk: DiffChunk, analysis: dict[str, Any]) -> str:
     parts = []
-    if chunk.total > 1:
-        parts.append(f"Part {chunk.index}/{chunk.total}")
     summary = str(analysis.get("summary") or "").strip()
     if summary:
         parts.append(summary)
@@ -162,7 +166,7 @@ def normalized_update_sections_for_render(analysis: dict[str, Any]) -> list[dict
     ]
     if highlights:
         return [{"title": "更新内容", "items": highlights}]
-    return [{"title": "更新内容", "items": [{"text": "本分片没有可展示的更新条目。", "children": []}]}]
+    return [{"title": "更新内容", "items": [{"text": "本次更新没有可展示的更新条目。", "children": []}]}]
 
 
 def render_update_items(items: list[dict[str, Any]]) -> str:

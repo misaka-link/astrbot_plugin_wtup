@@ -14,7 +14,9 @@ DEFAULT_INTERVAL_MINUTES = 30
 DEFAULT_ANALYSIS_PROMPT = (
     "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
     "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
-    "写作 英文名(中文名)。"
+    "写作 英文名(中文名)，如载具名称有特殊字符也要保留。请注意改动可能并非全部游戏模式，"
+    "此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。"
+    "必须遵守后续系统给出的 JSON 输出格式要求。"
 )
 
 

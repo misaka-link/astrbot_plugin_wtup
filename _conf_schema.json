@@ -9,7 +9,7 @@
   "timeout_seconds": {
     "type": "int",
     "description": "大模型分析最大超时时间",
-    "hint": "单位：秒。单个分片超过这个时间会视为失败。",
+    "hint": "单位：秒。单次模型请求超过这个时间会视为失败。",
     "default": 120
   },
   "target_groups": {
@@ -31,7 +31,7 @@
     "type": "text",
     "description": "分析提示词",
     "hint": "用于指导模型如何分析 War Thunder Datamine 的 commit diff。",
-    "default": "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，写作 英文名(中文名)。"
+    "default": "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，写作 英文名(中文名)，如载具名称有特殊字符也要保留。请注意改动可能并非全部游戏模式，此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。必须遵守后续系统给出的 JSON 输出格式要求。"
   },
   "github_token": {
     "type": "string",
@@ -41,14 +41,14 @@
   },
   "max_files_per_report": {
     "type": "int",
-    "description": "每份报告最多文件数",
-    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多份报告并多次推送。",
+    "description": "每次模型请求最多文件数",
+    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多次模型请求，最终合并为一份报告并只推送一次。",
     "default": 0
   },
   "max_patch_chars": {
     "type": "int",
-    "description": "每份报告最大 diff 字符数",
-    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多份报告并多次推送。",
+    "description": "每次模型请求最大 diff 字符数",
+    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多次模型请求，最终合并为一份报告并只推送一次。",
     "default": 0
   }
 }

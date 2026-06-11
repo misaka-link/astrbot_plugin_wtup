@@ -10,17 +10,17 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 try:
-    from .wtup.analyzer import analyze_chunk
+    from .wtup.analyzer import analyze_chunks, merge_chunk_analyses
     from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
-    from .wtup.diff_collector import build_diff_summary, short_sha
+    from .wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from .wtup.github_client import GitHubClient, GitHubRequestError
     from .wtup.notifier import push_report
     from .wtup.renderer import build_report_html, render_plain_text, render_report_image
     from .wtup.state_store import StateStore
 except ImportError:
-    from wtup.analyzer import analyze_chunk
+    from wtup.analyzer import analyze_chunks, merge_chunk_analyses
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
-    from wtup.diff_collector import build_diff_summary, short_sha
+    from wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from wtup.github_client import GitHubClient, GitHubRequestError
     from wtup.notifier import push_report
     from wtup.renderer import build_report_html, render_plain_text, render_report_image
@@ -101,8 +101,8 @@ class WTUpdatePlugin(Star):
             f"上次检查: {last_checked_text}",
             f"检查间隔: {self.settings.monitor_interval_minutes} 分钟",
             f"推送目标: {len(self.settings.target_groups)} 个",
-            f"文件限制: {self.settings.max_files_per_report or '不限制'}",
-            f"字符限制: {self.settings.max_patch_chars or '不限制'}",
+            f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
+            f"单次模型请求字符限制: {self.settings.max_patch_chars or '不限制'}",
         ]
         await self._react_to_command_done(event)
         yield event.plain_result("\n".join(lines))
@@ -259,51 +259,50 @@ class WTUpdatePlugin(Star):
                     max_files=self.settings.max_files_per_report,
                     max_chars=self.settings.max_patch_chars,
                 )
-            logger.info("[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 份", PLUGIN_NAME, summary.total_files, len(summary.chunks))
+            logger.info("[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 次模型请求", PLUGIN_NAME, summary.total_files, len(summary.chunks))
 
             sent_count = 0
             failed_count = 0
-            first_image_path: Path | None = None
-            first_text = ""
 
-            logger.info("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
-            for i, chunk in enumerate(summary.chunks):
-                logger.info("[%s] 分析 chunk %d/%d (%d 个文件)...", PLUGIN_NAME, i + 1, len(summary.chunks), len(chunk.files))
-                analysis = await analyze_chunk(self.context, self.settings, summary, chunk)
-                logger.info("[%s] 已完成分析 chunk %d/%d", PLUGIN_NAME, i + 1, len(summary.chunks))
-                html_text = build_report_html(self.template_path, summary, chunk, analysis)
-                image_path = await render_report_image(self, html_text, self.image_dir)
-                fallback_text = render_plain_text(summary, chunk, analysis)
-                if first_image_path is None:
-                    first_image_path = image_path
-                    first_text = fallback_text
+            logger.info("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
+            chunk_results = await analyze_chunks(self.context, self.settings, summary)
+            analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
+            report_chunk = DiffChunk(
+                index=1,
+                total=1,
+                files=summary.files,
+                patch_chars=sum(chunk.patch_chars for chunk in summary.chunks),
+            )
+            html_text = build_report_html(self.template_path, summary, report_chunk, analysis)
+            image_path = await render_report_image(self, html_text, self.image_dir)
+            fallback_text = render_plain_text(summary, report_chunk, analysis)
 
-                if send_to_groups and self.settings.target_groups:
-                    logger.info("[%s] 推送 chunk %d/%d 到 %d 个群聊...", PLUGIN_NAME, i + 1, len(summary.chunks), len(self.settings.target_groups))
-                    ok, failed = await push_report(
-                        self.context,
-                        self.settings.target_groups,
-                        image_path=image_path,
-                        fallback_text=fallback_text,
-                        event=event,
-                    )
-                    sent_count += ok
-                    failed_count += failed
-                    logger.info("[%s] 推送完成 chunk %d/%d: 成功 %d，失败 %d", PLUGIN_NAME, i + 1, len(summary.chunks), ok, failed)
+            if send_to_groups and self.settings.target_groups:
+                logger.info("[%s] 推送合并报告到 %d 个群聊...", PLUGIN_NAME, len(self.settings.target_groups))
+                ok, failed = await push_report(
+                    self.context,
+                    self.settings.target_groups,
+                    image_path=image_path,
+                    fallback_text=fallback_text,
+                    event=event,
+                )
+                sent_count += ok
+                failed_count += failed
+                logger.info("[%s] 推送完成合并报告: 成功 %d，失败 %d", PLUGIN_NAME, ok, failed)
 
             if not manual or send_to_groups:
                 self._save_seen_commit(latest.sha)
 
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
-                f"共 {summary.total_files} 个文件，拆分 {len(summary.chunks)} 份。"
+                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks)} 次，已合并为 1 份报告。"
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
             logger.info("[%s] ========== 检查完成: %s ==========", PLUGIN_NAME, message)
-            if first_image_path:
-                return {"message": message, "image_path": first_image_path}
-            return {"message": first_text or message}
+            if image_path:
+                return {"message": message, "image_path": image_path}
+            return {"message": fallback_text or message}
 
     def _save_seen_commit(self, sha: str) -> None:
         self.state_store.update_repo_state(

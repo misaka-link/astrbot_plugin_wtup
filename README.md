@@ -17,13 +17,13 @@ mode: commit
 后台配置项：
 
 - `provider_id`：模型 Provider ID，留空使用默认模型。
-- `timeout_seconds`：单个分片的大模型分析超时时间，单位秒。
+- `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
 - `github_token`：GitHub Personal Access Token，可选。
-- `max_files_per_report`：每份报告最多文件数，默认 0 表示不限制。
-- `max_patch_chars`：每份报告最大 diff 字符数，默认 0 表示不限制。
+- `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
+- `max_patch_chars`：每次模型请求最大 diff 字符数，默认 0 表示不限制。
 
 `github_token` 获取位置：
 
@@ -65,11 +65,11 @@ https://github.com/settings/tokens
 
 强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`。仅 AstrBot 管理员可执行。
 
-## 分片规则
+## 模型请求拆分规则
 
 `max_files_per_report` 和 `max_patch_chars` 默认都是 `0`，表示不限制。
 
-如果其中任意一个设置为大于 `0`，插件会按文件数和 diff 字符数拆分任务。每个分片都会单独调用一次模型、生成一张图片，并向配置的群聊多次推送。
+如果其中任意一个设置为大于 `0`，插件会按文件数和 diff 字符数拆分模型请求。每次请求都会单独调用一次模型，所有分析结果会按原始文件顺序合并成一份报告，最终只生成一张图片并推送一次。
 
 ## 首次运行
 

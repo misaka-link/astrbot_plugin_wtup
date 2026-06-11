@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -16,16 +17,33 @@ from .config import PLUGIN_NAME, PluginConfig
 from .diff_collector import DiffChunk, DiffSummary, render_chunk_input
 
 
+@dataclass(frozen=True)
+class ChunkAnalysis:
+    chunk_index: int
+    chunk_total: int
+    analysis: dict[str, Any]
+    error: str = ""
+
+
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
     return f"""
 {settings.analysis_prompt}
 
 你正在分析固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新。
 
-请只输出 JSON，不要使用 Markdown 代码块。JSON 字段如下：
+输出协议：
+1. 只能输出一个 JSON object。
+2. 不要输出 Markdown 代码块。
+3. 不要输出解释、前言、后记。
+4. JSON 必须能被 json.loads 直接解析。
+5. 所有字符串必须使用双引号。
+6. 不允许尾随逗号。
+7. 不确定的信息写入 uncertainties，不要编造。
+
+JSON 字段如下：
 {{
   "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
-  "summary": "一句话总结本分片最重要的变化",
+  "summary": "一句话总结这些变更中最重要的变化",
   "importance": "低/中/高",
   "update_sections": [
     {{
@@ -59,8 +77,9 @@ def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk)
 7. 如果信息不足，要明确写“不确定”，不要编造。
 8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
 9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加 Part、分片、说明文字或其他内容。
-10. summary 会显示在标题下面的小字行，可以写描述性标题或本分片摘要；不要把描述性标题写进 report_title。
-11. 当前是第 {chunk.index}/{chunk.total} 个分片；分片信息会由程序显示在标题下方，不要写进 report_title。
+10. summary 会显示在标题下面的小字行，可以写描述性标题；不要把描述性标题写进 report_title。
+11. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
+12. 当前是内部模型请求第 {chunk.index}/{chunk.total} 批；该信息只用于你理解输入范围，最终报告会由程序合并，不要输出批次信息。
 
 以下是 GitHub 变更数据：
 
@@ -85,32 +104,239 @@ async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSumma
 
     response = await asyncio.wait_for(context.llm_generate(**llm_kwargs), timeout=settings.timeout_seconds)
     text = extract_response_text(response)
+    return safe_normalize_analysis(text)
+
+
+async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSummary) -> list[ChunkAnalysis]:
+    results: list[ChunkAnalysis] = []
+    for chunk in summary.chunks:
+        try:
+            analysis = await analyze_chunk(context, settings, summary, chunk)
+            results.append(ChunkAnalysis(chunk.index, chunk.total, analysis))
+        except Exception as exc:
+            logger.warning("[%s] 模型分析失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+            results.append(
+                ChunkAnalysis(
+                    chunk.index,
+                    chunk.total,
+                    fallback_analysis("模型分析失败，相关文件需要结合 GitHub 原始 diff 复核。"),
+                    error=str(exc),
+                )
+            )
+    return results
+
+
+def safe_normalize_analysis(text: str) -> dict[str, Any]:
     parsed = parse_analysis_json(text)
     if parsed is not None:
         return parsed
+    return fallback_analysis(
+        "模型输出格式未按 JSON 返回，相关内容需要结合 GitHub 原始 diff 复核。",
+        raw_text=text,
+    )
+
+
+def fallback_analysis(reason: str, *, raw_text: str = "") -> dict[str, Any]:
+    reason = str(reason or "").strip() or "模型分析结果不可用，需要结合 GitHub 原始 diff 复核。"
+    raw_text = str(raw_text or "").strip()
+    item_text = raw_text[:1200] if raw_text else reason
     return {
-        "summary": first_non_empty_line(text) or "模型返回了非 JSON 分析结果。",
+        "summary": reason,
         "report_title": "",
         "importance": "中",
         "update_sections": [
             {
-                "title": "模型原始输出",
-                "items": [{"text": text[:1200] if text else "模型返回为空。", "children": []}],
+                "title": "其他变化",
+                "items": [{"text": item_text, "children": []}],
             }
         ],
-        "highlights": [text[:1200]] if text else ["模型返回为空。"],
+        "highlights": [item_text],
         "player_impact": [],
-        "risks": ["模型输出格式未按 JSON 返回。"],
+        "risks": [reason],
         "recommendation": "请结合 GitHub 原始 diff 复核。",
         "ai_analysis": {
-            "changed_content": [text[:1200]] if text else ["模型返回为空。"],
+            "changed_content": [item_text],
             "player_impact": [],
-            "uncertainties": ["模型输出格式未按 JSON 返回。"],
+            "uncertainties": [reason],
             "recommendation": "请结合 GitHub 原始 diff 复核。",
         },
-        "tags": ["格式异常"],
-        "raw_text": text,
+        "tags": ["需复核"],
+        "raw_text": raw_text,
     }
+
+
+def merge_chunk_analyses(
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+) -> dict[str, Any]:
+    ordered_results = order_chunk_results(chunks, results)
+    analyses = [coerce_analysis(result.analysis) for result in ordered_results]
+
+    report_title = first_text(analysis.get("report_title") for analysis in analyses)
+    importance = max_importance(analysis.get("importance") for analysis in analyses)
+    tags = unique_preserve_order(tag for analysis in analyses for tag in analysis.get("tags", []))
+    update_sections = merge_update_sections(analyses)
+
+    changed_content = unique_preserve_order(
+        item
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("changed_content", [])
+    )[:10]
+    player_impact = unique_preserve_order(
+        item
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("player_impact", [])
+    )[:10]
+    uncertainties = unique_preserve_order(
+        item
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("uncertainties", [])
+    )[:10]
+    if any(result.error for result in ordered_results):
+        uncertainties = unique_preserve_order(
+            [*uncertainties, "部分文件模型分析失败，需要结合 GitHub 原始 diff 复核。"]
+        )[:10]
+
+    recommendation = first_recommendation_by_importance(analyses) or "建议关注本次更新，并结合游戏内实装情况复核。"
+    summary_text = f"本次更新共 {summary.total_files} 个文件。"
+    if summary.total_commits:
+        summary_text = f"本次更新包含 {summary.total_commits} 个提交、{summary.total_files} 个文件。"
+
+    return normalize_analysis(
+        {
+            "report_title": report_title,
+            "summary": summary_text,
+            "importance": importance,
+            "update_sections": update_sections,
+            "ai_analysis": {
+                "changed_content": changed_content,
+                "player_impact": player_impact,
+                "uncertainties": uncertainties,
+                "recommendation": recommendation,
+            },
+            "tags": tags,
+        }
+    )
+
+
+def order_chunk_results(chunks: list[DiffChunk], results: list[ChunkAnalysis]) -> list[ChunkAnalysis]:
+    result_map = {result.chunk_index: result for result in results}
+    ordered: list[ChunkAnalysis] = []
+    for chunk in sorted(chunks, key=lambda item: item.index):
+        result = result_map.get(chunk.index)
+        if result is None:
+            ordered.append(
+                ChunkAnalysis(
+                    chunk.index,
+                    chunk.total,
+                    fallback_analysis("部分文件未获得模型分析结果，需要结合 GitHub 原始 diff 复核。"),
+                    error="missing analysis result",
+                )
+            )
+        else:
+            ordered.append(result)
+    return ordered
+
+
+def coerce_analysis(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        try:
+            return normalize_analysis(value)
+        except Exception as exc:
+            logger.warning("[%s] 标准化模型结果失败: %s", PLUGIN_NAME, exc)
+    return fallback_analysis("模型分析结果结构异常，需要结合 GitHub 原始 diff 复核。")
+
+
+def merge_update_sections(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index_by_title: dict[str, int] = {}
+    for analysis in analyses:
+        for section in analysis.get("update_sections", []):
+            if not isinstance(section, dict):
+                continue
+            title = clean_section_title(section.get("title"))
+            items = normalize_update_items(section.get("items"), limit=100)
+            if not items:
+                continue
+            if title not in index_by_title:
+                index_by_title[title] = len(merged)
+                merged.append({"title": title, "items": []})
+            merged[index_by_title[title]]["items"].extend(items)
+
+    for section in merged:
+        section["items"] = dedupe_update_items(section["items"])
+    return merged or [{"title": "更新内容", "items": [{"text": "本次更新没有可展示的更新条目。", "children": []}]}]
+
+
+def clean_section_title(value: Any) -> str:
+    title = str(value or "").strip()
+    if not title:
+        return "其他变化"
+    normalized = re.sub(r"\s+", "", title).lower()
+    if re.fullmatch(r"(part\d+(/\d+)?|第?\d+(批|部分|分片)|分片\d+(/\d+)?)", normalized):
+        return "其他变化"
+    if "分片" in title or re.search(r"\bpart\s*\d+", title, flags=re.I):
+        return "其他变化"
+    return title
+
+
+def dedupe_update_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        text = str(item.get("text") or "").strip() if isinstance(item, dict) else ""
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        children = item.get("children") if isinstance(item.get("children"), list) else []
+        result.append({"text": text, "children": dedupe_update_items(children)})
+    return result
+
+
+def get_ai_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    value = analysis.get("ai_analysis")
+    return value if isinstance(value, dict) else {}
+
+
+def max_importance(values: Any) -> str:
+    rank = {"低": 0, "中": 1, "高": 2}
+    best = "低"
+    for value in values:
+        normalized = normalize_importance(value)
+        if rank[normalized] > rank[best]:
+            best = normalized
+    return best
+
+
+def first_recommendation_by_importance(analyses: list[dict[str, Any]]) -> str:
+    rank = {"低": 0, "中": 1, "高": 2}
+    ordered = sorted(analyses, key=lambda item: rank.get(normalize_importance(item.get("importance")), 1), reverse=True)
+    for analysis in ordered:
+        recommendation = str(get_ai_analysis(analysis).get("recommendation") or analysis.get("recommendation") or "").strip()
+        if recommendation:
+            return recommendation
+    return ""
+
+
+def first_text(values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def unique_preserve_order(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def extract_response_text(response: Any) -> str:
