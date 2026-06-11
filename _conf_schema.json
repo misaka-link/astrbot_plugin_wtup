@@ -2,6 +2,7 @@
   "provider_id": {
     "type": "string",
     "description": "模型 Provider ID",
+    "_special": "select_provider",
     "hint": "留空使用 AstrBot 当前默认模型；填写 AstrBot 后台中模型提供商的 Provider ID。",
     "default": ""
   },
@@ -12,10 +13,13 @@
     "default": 120
   },
   "target_groups": {
-    "type": "text",
+    "type": "list",
     "description": "推送群聊列表",
-    "hint": "每行一个 unified_msg_origin。可在目标群发送 /wtup_bind 获取当前群的 unified_msg_origin。",
-    "default": ""
+    "hint": "每项填写一个 unified_msg_origin。可在目标群发送 /wtup_bind 获取当前群的 unified_msg_origin。",
+    "default": [],
+    "items": {
+      "type": "string"
+    }
   },
   "monitor_interval_minutes": {
     "type": "int",

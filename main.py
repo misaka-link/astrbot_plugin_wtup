@@ -79,21 +79,23 @@ class WTUpdatePlugin(Star):
         yield event.plain_result(
             "当前会话 unified_msg_origin：\n"
             f"{origin}\n\n"
-            "把这一行填入后台配置的“推送群聊列表”，每行一个。"
+            "把这一项添加到后台配置的“推送群聊列表”。"
         )
 
     @filter.command("wtup_check")
     async def wtup_check(self, event: AstrMessageEvent):
         args = str(getattr(event, "message_str", "") or "")
-        force_latest = "强制" in args or "force" in args.lower()
+        args_lower = args.lower()
+        force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
+        force_latest = force_all or "强制" in args or "force" in args_lower
         try:
-            result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=False)
+            result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all)
         except Exception as exc:
             logger.exception("[%s] 手动检查失败: %s", PLUGIN_NAME, exc)
             yield event.plain_result(f"检查失败：{exc}")
             return
 
-        if result.get("image_path"):
+        if result.get("image_path") and not force_all:
             yield event.image_result(str(result["image_path"]))
             return
         yield event.plain_result(str(result.get("message") or "检查完成。"))
@@ -111,8 +113,12 @@ class WTUpdatePlugin(Star):
 
     async def check_once(self, *, manual: bool, force_latest: bool, send_to_groups: bool) -> dict[str, Any]:
         async with self._check_lock:
+            logger.info("[%s] ========== 开始执行检查%s ==========", PLUGIN_NAME, "（手动）" if manual else "（定时）")
+
             client = GitHubClient(token=self.settings.github_token)
+            logger.info("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
             latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
+            logger.info("[%s] 已完成获取最新 commit: %s", PLUGIN_NAME, short_sha(latest.sha))
             if not latest.sha:
                 return {"message": "未获取到最新 commit。"}
 
@@ -124,6 +130,7 @@ class WTUpdatePlugin(Star):
                     previous_sha = latest.parents[0]
                 else:
                     self._save_seen_commit(latest.sha)
+                    logger.info("[%s] 首次检查，已建立基线: %s", PLUGIN_NAME, short_sha(latest.sha))
                     return {
                         "message": (
                             f"首次检查已建立基线：{short_sha(latest.sha)}。\n"
@@ -133,6 +140,7 @@ class WTUpdatePlugin(Star):
 
             if previous_sha == latest.sha and not force_latest:
                 self._save_seen_commit(latest.sha)
+                logger.info("[%s] 没有新 commit，跳过", PLUGIN_NAME)
                 return {"message": f"没有新 commit，当前为 {short_sha(latest.sha)}。"}
 
             if force_latest and latest.parents:
@@ -141,12 +149,19 @@ class WTUpdatePlugin(Star):
             if send_to_groups and not self.settings.target_groups:
                 return {"message": "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"}
 
+            logger.info("[%s] 步骤 2/5: 对比 commits (%s...%s)...", PLUGIN_NAME, short_sha(previous_sha), short_sha(latest.sha))
             compare_payload = await asyncio.to_thread(client.compare_commits, REPO_FULL_NAME, previous_sha, latest.sha)
+            logger.info("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
+
+            logger.info("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
             try:
                 raw_diff_text = await asyncio.to_thread(client.compare_diff_text, REPO_FULL_NAME, previous_sha, latest.sha)
+                logger.info("[%s] 已完成获取原始 diff", PLUGIN_NAME)
             except GitHubRequestError as exc:
                 raw_diff_text = ""
                 logger.warning("[%s] 获取原始 diff 失败，使用 compare API 文件列表兜底: %s", PLUGIN_NAME, exc)
+
+            logger.info("[%s] 步骤 4/5: 构建 diff 摘要...", PLUGIN_NAME)
             summary = build_diff_summary(
                 compare_payload,
                 raw_diff_text=raw_diff_text,
@@ -160,14 +175,18 @@ class WTUpdatePlugin(Star):
                     max_files=self.settings.max_files_per_report,
                     max_chars=self.settings.max_patch_chars,
                 )
+            logger.info("[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 份", PLUGIN_NAME, summary.total_files, len(summary.chunks))
 
             sent_count = 0
             failed_count = 0
             first_image_path: Path | None = None
             first_text = ""
 
-            for chunk in summary.chunks:
+            logger.info("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
+            for i, chunk in enumerate(summary.chunks):
+                logger.info("[%s] 分析 chunk %d/%d (%d 个文件)...", PLUGIN_NAME, i + 1, len(summary.chunks), len(chunk.files))
                 analysis = await analyze_chunk(self.context, self.settings, summary, chunk)
+                logger.info("[%s] 已完成分析 chunk %d/%d", PLUGIN_NAME, i + 1, len(summary.chunks))
                 html_text = build_report_html(self.template_path, summary, chunk, analysis)
                 image_path = await render_report_image(self, html_text, self.image_dir)
                 fallback_text = render_plain_text(summary, chunk, analysis)
@@ -176,6 +195,7 @@ class WTUpdatePlugin(Star):
                     first_text = fallback_text
 
                 if send_to_groups and self.settings.target_groups:
+                    logger.info("[%s] 推送 chunk %d/%d 到 %d 个群聊...", PLUGIN_NAME, i + 1, len(summary.chunks), len(self.settings.target_groups))
                     ok, failed = await push_report(
                         self.context,
                         self.settings.target_groups,
@@ -184,6 +204,7 @@ class WTUpdatePlugin(Star):
                     )
                     sent_count += ok
                     failed_count += failed
+                    logger.info("[%s] 推送完成 chunk %d/%d: 成功 %d，失败 %d", PLUGIN_NAME, i + 1, len(summary.chunks), ok, failed)
 
             if not manual or send_to_groups:
                 self._save_seen_commit(latest.sha)
@@ -194,6 +215,7 @@ class WTUpdatePlugin(Star):
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
+            logger.info("[%s] ========== 检查完成: %s ==========", PLUGIN_NAME, message)
             if first_image_path:
                 return {"message": message, "image_path": first_image_path}
             return {"message": first_text or message}

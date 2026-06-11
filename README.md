@@ -18,7 +18,7 @@ mode: commit
 
 - `provider_id`：模型 Provider ID，留空使用默认模型。
 - `timeout_seconds`：单个分片的大模型分析超时时间，单位秒。
-- `target_groups`：推送群聊列表，每行一个 `unified_msg_origin`。
+- `target_groups`：推送群聊列表，每项一个 `unified_msg_origin`。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
 - `github_token`：GitHub Personal Access Token，可选。
@@ -57,7 +57,13 @@ https://github.com/settings/tokens
 /wtup_check 强制
 ```
 
-强制分析最新一个 commit，用于测试图片渲染和模型分析。
+强制分析最新一个 commit，用于测试图片渲染和模型分析，只回复当前会话，不群发。
+
+```text
+/wtup_check 强制全部
+```
+
+强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`。
 
 ## 分片规则
 
