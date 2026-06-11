@@ -63,7 +63,7 @@ https://github.com/settings/tokens
 /wtup_check 强制全部
 ```
 
-强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`。
+强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`。仅 AstrBot 管理员可执行。
 
 ## 分片规则
 

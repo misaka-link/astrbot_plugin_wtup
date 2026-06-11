@@ -51,6 +51,17 @@ def _call_target(event: AstrMessageEvent) -> Any | None:
     return None
 
 
+def _event_is_admin(event: AstrMessageEvent) -> bool:
+    is_admin = getattr(event, "is_admin", None)
+    if not callable(is_admin):
+        return False
+    try:
+        return bool(is_admin())
+    except Exception as exc:
+        logger.debug("[%s] 检查管理员权限失败: %s", PLUGIN_NAME, exc)
+        return False
+
+
 @register(PLUGIN_NAME, "御坂_20001", "War Thunder Datamine 更新监控插件", PLUGIN_VERSION)
 class WTUpdatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -117,6 +128,9 @@ class WTUpdatePlugin(Star):
         args_lower = args.lower()
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
         force_latest = force_all or "强制" in args or "force" in args_lower
+        if force_all and not _event_is_admin(event):
+            yield event.plain_result("权限不足：/wtup_check 强制全部 只能由 AstrBot 管理员执行。")
+            return
         try:
             result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all, event=event)
         except Exception as exc:
