@@ -1,0 +1,70 @@
+{
+  "provider_id": {
+    "type": "string",
+    "description": "模型 Provider ID",
+    "hint": "留空使用 AstrBot 当前默认模型；填写 AstrBot 后台中模型提供商的 Provider ID。",
+    "default": ""
+  },
+  "thinking_level": {
+    "type": "string",
+    "description": "最大思考 token 等级",
+    "options": [
+      "off",
+      "low",
+      "medium",
+      "high",
+      "custom"
+    ],
+    "hint": "插件会把该等级写入分析提示词中：off=0，low=1024，medium=4096，high=8192，custom 使用下面的自定义数字。",
+    "default": "medium"
+  },
+  "custom_thinking_tokens": {
+    "type": "int",
+    "description": "自定义最大思考 token",
+    "hint": "thinking_level=custom 时使用；0 表示不要求思考预算。",
+    "default": 4096
+  },
+  "timeout_seconds": {
+    "type": "int",
+    "description": "大模型分析最大超时时间",
+    "hint": "单位：秒。单个分片超过这个时间会视为失败。",
+    "default": 120
+  },
+  "target_groups": {
+    "type": "text",
+    "description": "推送群聊列表",
+    "hint": "每行一个 unified_msg_origin。可在目标群发送 /wtup_bind 获取当前群的 unified_msg_origin。",
+    "default": ""
+  },
+  "monitor_interval_minutes": {
+    "type": "int",
+    "description": "监控频率",
+    "hint": "单位：分钟。默认 30 分钟检查一次 gszabi99/War-Thunder-Datamine 的 master commit。",
+    "default": 30
+  },
+  "analysis_prompt": {
+    "type": "text",
+    "description": "分析提示词",
+    "hint": "用于指导模型如何分析 War Thunder Datamine 的 commit diff。",
+    "default": "请分析 War Thunder Datamine 的 GitHub commit 更新内容，提炼游戏数据变化、可能影响、重要程度和玩家需要关注的内容。"
+  },
+  "github_token": {
+    "type": "string",
+    "description": "GitHub Personal Access Token",
+    "hint": "可选。用于提高 GitHub API 访问限额。获取位置：https://github.com/settings/tokens 。公开仓库只读访问即可：Fine-grained token 选择 Public repositories read-only；Classic token 可不勾选 scopes。留空则匿名访问，限额较低。",
+    "default": ""
+  },
+  "max_files_per_report": {
+    "type": "int",
+    "description": "每份报告最多文件数",
+    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多份报告并多次推送。",
+    "default": 0
+  },
+  "max_patch_chars": {
+    "type": "int",
+    "description": "每份报告最大 diff 字符数",
+    "hint": "默认 0 表示不限制。若设置为大于 0，超过后会拆成多份报告并多次推送。",
+    "default": 0
+  }
+}
+
