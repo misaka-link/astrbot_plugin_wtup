@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,6 +66,7 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
     if not files:
         return [DiffChunk(index=1, total=1, files=[], patch_chars=0)]
 
+    files = order_files_by_similarity(files)
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_chars = 0
@@ -94,6 +96,13 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
         DiffChunk(index=index + 1, total=total, files=chunk_files, patch_chars=sum(_file_patch_chars(item) for item in chunk_files))
         for index, chunk_files in enumerate(chunks)
     ]
+
+
+def order_files_by_similarity(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for file_info in files:
+        groups.setdefault(_similarity_key(file_info), []).append(file_info)
+    return [file_info for group in groups.values() for file_info in group]
 
 
 def render_chunk_input(summary: DiffSummary, chunk: DiffChunk) -> str:
@@ -160,6 +169,21 @@ def _normalize_commit(commit_payload: dict[str, Any]) -> dict[str, Any]:
 
 def _file_patch_chars(file_info: dict[str, Any]) -> int:
     return len(str(file_info.get("patch") or "")) + len(str(file_info.get("filename") or ""))
+
+
+def _similarity_key(file_info: dict[str, Any]) -> str:
+    filename = str(file_info.get("filename") or "").strip().replace("\\", "/")
+    directory, _, basename = filename.rpartition("/")
+    if not basename:
+        basename = directory
+        directory = ""
+    stem, dot, suffix = basename.rpartition(".")
+    if not dot:
+        stem = basename
+        suffix = ""
+    normalized_stem = re.sub(r"\d+", "#", stem.lower())
+    normalized_stem = re.sub(r"[_\-.]+", "_", normalized_stem).strip("_")
+    return f"{directory.lower()}|{normalized_stem}|{suffix.lower()}"
 
 
 def parse_unified_diff(raw_diff_text: str) -> list[dict[str, Any]]:

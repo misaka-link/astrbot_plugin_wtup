@@ -24,6 +24,7 @@ DEFAULT_ANALYSIS_PROMPT = (
 class PluginConfig:
     provider_id: str
     timeout_seconds: int
+    model_concurrency: int
     analysis_prompt: str
     enable_second_pass_analysis: bool
     target_groups: list[str]
@@ -90,6 +91,7 @@ def load_config(config: Any) -> PluginConfig:
     return PluginConfig(
         provider_id=str(config_get(config, "provider_id", "") or "").strip(),
         timeout_seconds=as_int(config_get(config, "timeout_seconds", 120), 120, minimum=1),
+        model_concurrency=as_int(config_get(config, "model_concurrency", 1), 1, minimum=1),
         analysis_prompt=str(config_get(config, "analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or DEFAULT_ANALYSIS_PROMPT),
         enable_second_pass_analysis=as_bool(config_get(config, "enable_second_pass_analysis", False)),
         target_groups=split_lines(config_get(config, "target_groups", "")),

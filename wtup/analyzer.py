@@ -88,6 +88,65 @@ JSON 字段如下：
 """.strip()
 
 
+def build_json_repair_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk, raw_text: str) -> str:
+    files = "\n".join(f"- {file_info.get('filename') or ''}" for file_info in chunk.files)
+    return f"""
+{settings.analysis_prompt}
+
+上一次模型分析返回的内容不是有效 JSON。请基于“上次模型原始输出”和“当前分片文件列表”重新整理为严格 JSON。
+
+输出协议：
+1. 只能输出一个 JSON object。
+2. 不要输出 Markdown 代码块。
+3. 不要输出解释、前言、后记。
+4. JSON 必须能被 json.loads 直接解析。
+5. 所有字符串必须使用双引号。
+6. 不允许尾随逗号。
+7. 不确定的信息写入 uncertainties，不要编造。
+
+JSON 字段如下：
+{{
+  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
+  "summary": "一句话总结这些变更中最重要的变化",
+  "importance": "低/中/高",
+  "update_sections": [
+    {{
+      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
+      "items": [
+        {{
+          "text": "条目内容",
+          "children": [
+            {{"text": "子条目内容", "children": []}}
+          ]
+        }}
+      ]
+    }}
+  ],
+  "ai_analysis": {{
+    "changed_content": ["AI 分析出的实际改动内容"],
+    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
+    "uncertainties": ["不确定点、需要继续观察的地方"],
+    "recommendation": "是否建议玩家关注/更新，以及原因"
+  }},
+  "tags": ["标签1", "标签2"]
+}}
+
+要求：
+1. 用中文。
+2. 只能使用上次模型原始输出和文件列表中已有的信息，不要新增未经输入支持的内容。
+3. 如果上次输出无法判断实际改动，生成需复核条目，并把原因写入 uncertainties。
+4. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
+
+提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
+当前分片: {chunk.index}/{chunk.total}
+当前分片文件:
+{files}
+
+上次模型原始输出:
+{str(raw_text or "").strip()[:8000]}
+""".strip()
+
+
 def build_refinement_prompt(settings: PluginConfig, summary: DiffSummary, merged_analysis: dict[str, Any]) -> str:
     merged_json = json.dumps(normalize_analysis(merged_analysis), ensure_ascii=False, indent=2)
     return f"""
@@ -287,7 +346,10 @@ async def request_llm(context: Any, settings: PluginConfig, prompt: str) -> Any:
 
 async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
     prompt = build_prompt(settings, summary, chunk)
-    return await generate_analysis_from_prompt(context, settings, prompt)
+    response = await request_llm(context, settings, prompt)
+    ensure_usable_llm_response(response)
+    raw_text = extract_response_text(response)
+    return await parse_or_repair_analysis(context, settings, summary, chunk, raw_text)
 
 
 async def refine_merged_analysis(
@@ -310,25 +372,145 @@ async def refine_merged_analysis(
 
 
 async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSummary) -> list[ChunkAnalysis]:
-    results: list[ChunkAnalysis] = []
-    for chunk in summary.chunks:
-        try:
-            prompt = build_prompt(settings, summary, chunk)
-            response = await request_llm(context, settings, prompt)
-            raw_text = extract_response_text(response)
-            analysis = safe_normalize_analysis(raw_text)
-            results.append(ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text))
-        except Exception as exc:
-            logger.warning("[%s] 模型分析失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
-            results.append(
-                ChunkAnalysis(
-                    chunk.index,
-                    chunk.total,
-                    fallback_analysis("模型分析失败，相关文件需要结合 GitHub 原始 diff 复核。"),
-                    error=str(exc),
-                )
+    concurrency = max(1, int(getattr(settings, "model_concurrency", 1) or 1))
+    semaphore = asyncio.Semaphore(concurrency)
+    tasks = [
+        analyze_chunk_with_retry(context, settings, summary, chunk, semaphore)
+        for chunk in summary.chunks
+    ]
+    results = await asyncio.gather(*tasks)
+    return order_chunk_results(summary.chunks, results)
+
+
+async def analyze_chunk_with_retry(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    semaphore: asyncio.Semaphore,
+) -> ChunkAnalysis:
+    try:
+        return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
+    except Exception as exc:
+        if len(chunk.files) <= 1:
+            logger.warning("[%s] 模型分析失败 chunk %d/%d，无法继续拆分: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+            return ChunkAnalysis(
+                chunk.index,
+                chunk.total,
+                fallback_analysis("模型分析失败，相关文件需要结合 GitHub 原始 diff 复核。"),
+                error=str(exc),
             )
-    return results
+
+        retry_chunks = split_chunk_for_retry(chunk)
+        logger.warning(
+            "[%s] 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试一次: %s",
+            PLUGIN_NAME,
+            chunk.index,
+            chunk.total,
+            len(retry_chunks),
+            exc,
+        )
+        retry_results = await asyncio.gather(
+            *[
+                analyze_chunk_without_retry(context, settings, summary, retry_chunk, semaphore)
+                for retry_chunk in retry_chunks
+            ]
+        )
+        try:
+            merged = merge_chunk_analyses(summary, retry_chunks, retry_results)
+        except Exception as merge_exc:
+            logger.warning("[%s] 拆分重试结果合并失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, merge_exc)
+            return ChunkAnalysis(
+                chunk.index,
+                chunk.total,
+                fallback_analysis("模型拆分重试已完成，但结果合并失败，需要结合 GitHub 原始 diff 复核。"),
+                error=f"{exc}; retry merge failed: {merge_exc}",
+            )
+
+        retry_errors = "; ".join(result.error for result in retry_results if result.error)
+        retry_raw_text = "\n\n".join(result.raw_text for result in retry_results if result.raw_text)
+        return ChunkAnalysis(chunk.index, chunk.total, merged, error=retry_errors, raw_text=retry_raw_text)
+
+
+async def analyze_chunk_without_retry(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    semaphore: asyncio.Semaphore,
+) -> ChunkAnalysis:
+    try:
+        return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
+    except Exception as exc:
+        logger.warning("[%s] 拆分重试仍失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+        return ChunkAnalysis(
+            chunk.index,
+            chunk.total,
+            fallback_analysis("模型拆分重试仍失败，相关文件需要结合 GitHub 原始 diff 复核。"),
+            error=str(exc),
+        )
+
+
+async def analyze_chunk_once(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    semaphore: asyncio.Semaphore,
+) -> ChunkAnalysis:
+    prompt = build_prompt(settings, summary, chunk)
+    async with semaphore:
+        response = await request_llm(context, settings, prompt)
+    ensure_usable_llm_response(response)
+    raw_text = extract_response_text(response)
+    analysis = await parse_or_repair_analysis(context, settings, summary, chunk, raw_text, semaphore=semaphore)
+    return ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text)
+
+
+async def parse_or_repair_analysis(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    raw_text: str,
+    *,
+    semaphore: asyncio.Semaphore | None = None,
+) -> dict[str, Any]:
+    parsed = parse_analysis_json(raw_text)
+    if parsed is not None:
+        return parsed
+
+    logger.warning("[%s] 模型输出 JSON 解析失败，启动二次模型分析 chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+    repair_prompt = build_json_repair_prompt(settings, summary, chunk, raw_text)
+    try:
+        if semaphore is None:
+            response = await request_llm(context, settings, repair_prompt)
+        else:
+            async with semaphore:
+                response = await request_llm(context, settings, repair_prompt)
+        ensure_usable_llm_response(response)
+        repair_text = extract_response_text(response)
+        repaired = parse_analysis_json(repair_text)
+        if repaired is not None:
+            return repaired
+        logger.warning("[%s] 二次模型分析仍未返回有效 JSON chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+    except Exception as exc:
+        logger.warning("[%s] 二次模型分析失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+
+    return fallback_analysis(
+        "模型输出格式未按 JSON 返回，二次模型分析仍失败，相关内容需要结合 GitHub 原始 diff 复核。",
+        raw_text=raw_text,
+    )
+
+
+def split_chunk_for_retry(chunk: DiffChunk) -> list[DiffChunk]:
+    target_size = max(1, (len(chunk.files) + 1) // 2)
+    groups = [chunk.files[index : index + target_size] for index in range(0, len(chunk.files), target_size)]
+    total = len(groups)
+    return [
+        DiffChunk(index=index + 1, total=total, files=files, patch_chars=sum(len(str(item.get("patch") or "")) + len(str(item.get("filename") or "")) for item in files))
+        for index, files in enumerate(groups)
+    ]
 
 
 async def refine_chunk_analyses(
@@ -573,9 +755,42 @@ def extract_response_text(response: Any) -> str:
         return str(response.completion_text or "").strip()
     if hasattr(response, "text"):
         return str(response.text or "").strip()
+    choices = getattr(response, "choices", None)
+    if choices:
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        content = getattr(message, "content", None)
+        if content is not None:
+            return str(content or "").strip()
     if isinstance(response, str):
         return response.strip()
     return str(response).strip()
+
+
+def ensure_usable_llm_response(response: Any) -> None:
+    reason = llm_failure_reason(response)
+    if reason:
+        raise RuntimeError(reason)
+
+
+def llm_failure_reason(response: Any) -> str:
+    if response is None:
+        return "模型无可用输出"
+
+    choices = getattr(response, "choices", None)
+    if choices:
+        first_choice = choices[0]
+        finish_reason = str(getattr(first_choice, "finish_reason", "") or "").strip()
+        text = extract_response_text(response)
+        if text:
+            return ""
+        if finish_reason and finish_reason != "stop":
+            return f"模型无可用输出: {finish_reason}"
+        return "模型无可用输出"
+
+    if extract_response_text(response):
+        return ""
+    return "模型无可用输出"
 
 
 def parse_analysis_json(text: str) -> dict[str, Any] | None:

@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import unittest
+from types import SimpleNamespace
 
 from wtup.analyzer import (
     ChunkAnalysis,
+    analyze_chunks,
     build_chunk_refinement_payload,
+    llm_failure_reason,
     merge_chunk_analyses,
     refine_chunk_analyses,
     refine_merged_analysis,
     safe_normalize_analysis,
+    split_chunk_for_retry,
 )
 from wtup.config import PluginConfig, load_config
-from wtup.diff_collector import DiffChunk, DiffSummary
+from wtup.diff_collector import DiffChunk, DiffSummary, split_files
 from wtup.renderer import report_update_subtitle
 
 
@@ -110,6 +116,16 @@ class ConfigTest(unittest.TestCase):
 
         self.assertTrue(settings.enable_second_pass_analysis)
 
+    def test_model_concurrency_defaults_to_one(self) -> None:
+        settings = load_config({})
+
+        self.assertEqual(settings.model_concurrency, 1)
+
+    def test_model_concurrency_has_minimum_one(self) -> None:
+        settings = load_config({"model_concurrency": 0})
+
+        self.assertEqual(settings.model_concurrency, 1)
+
 
 class FakeContext:
     def __init__(self, response: str):
@@ -121,10 +137,11 @@ class FakeContext:
         return self.response
 
 
-def make_settings() -> PluginConfig:
+def make_settings(*, model_concurrency: int = 2) -> PluginConfig:
     return PluginConfig(
         provider_id="",
         timeout_seconds=5,
+        model_concurrency=model_concurrency,
         analysis_prompt="请分析更新。",
         enable_second_pass_analysis=True,
         target_groups=[],
@@ -247,6 +264,134 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["chunks"][0]["analysis"]["summary"], "第一项")
         self.assertEqual(payload["chunks"][0]["raw_text"], '{"summary":"第一项"}')
         self.assertEqual(payload["chunks"][0]["files"], ["a.blkx"])
+
+
+class SequenceContext:
+    def __init__(self, responses, *, delay: float = 0):
+        self.responses = list(responses)
+        self.delay = delay
+        self.calls = 0
+        self.prompts: list[str] = []
+        self.active = 0
+        self.max_active = 0
+
+    async def llm_generate(self, **kwargs):
+        self.calls += 1
+        self.prompts.append(str(kwargs.get("prompt") or ""))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            response = self.responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            return response
+        finally:
+            self.active -= 1
+
+
+class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_analyze_chunks_preserves_chunk_order_with_concurrency(self) -> None:
+        summary = make_summary()
+        context = SequenceContext(
+            [
+                json_response(analysis("武器调整", "第一项")),
+                json_response(analysis("武器调整", "第二项")),
+                json_response(analysis("武器调整", "第三项")),
+            ],
+            delay=0.01,
+        )
+
+        results = await analyze_chunks(context, make_settings(model_concurrency=2), summary)
+
+        self.assertEqual([result.chunk_index for result in results], [1, 2, 3])
+        self.assertEqual(context.max_active, 2)
+
+    async def test_invalid_json_triggers_repair_request(self) -> None:
+        summary = make_summary()
+        context = SequenceContext(
+            [
+                "不是 JSON",
+                json_response(analysis("武器调整", "第二项")),
+                json_response(analysis("武器调整", "第三项")),
+                json_response(analysis("武器调整", "修复后的条目")),
+            ]
+        )
+
+        results = await analyze_chunks(context, make_settings(model_concurrency=1), summary)
+
+        self.assertEqual(context.calls, 4)
+        self.assertEqual(results[0].analysis["summary"], "修复后的条目")
+        self.assertIn("上一次模型分析返回的内容不是有效 JSON", context.prompts[3])
+
+    async def test_llm_empty_output_failure_splits_chunk_and_retries_once(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+            {"filename": "c.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+c"},
+            {"filename": "d.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+d"},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://example.invalid/compare",
+            total_commits=1,
+            total_files=len(files),
+            additions=4,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=8)],
+        )
+        context = SequenceContext(
+            [
+                empty_choice_response("model_context_window_exceeded"),
+                json_response(analysis("武器调整", "前半")),
+                json_response(analysis("经济调整", "后半")),
+            ]
+        )
+
+        results = await analyze_chunks(context, make_settings(), summary)
+
+        self.assertEqual(context.calls, 3)
+        self.assertEqual(len(results), 1)
+        items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
+        self.assertEqual(items, ["前半", "后半"])
+
+
+class AnalyzerUtilityTest(unittest.TestCase):
+    def test_llm_failure_reason_detects_empty_context_window_output(self) -> None:
+        response = empty_choice_response("model_context_window_exceeded")
+
+        self.assertIn("model_context_window_exceeded", llm_failure_reason(response))
+
+    def test_split_chunk_for_retry_halves_file_count(self) -> None:
+        files = [{"filename": f"f{index}.blkx", "patch": "+x"} for index in range(5)]
+        chunks = split_chunk_for_retry(DiffChunk(index=1, total=1, files=files, patch_chars=10))
+
+        self.assertEqual([len(chunk.files) for chunk in chunks], [3, 2])
+
+    def test_split_files_groups_similar_names_before_chunking(self) -> None:
+        files = [
+            {"filename": "units/tank_1.blkx", "patch": "+a"},
+            {"filename": "weapons/gun.blkx", "patch": "+b"},
+            {"filename": "units/tank_2.blkx", "patch": "+c"},
+        ]
+        chunks = split_files(files, max_files=2)
+
+        self.assertEqual([file["filename"] for file in chunks[0].files], ["units/tank_1.blkx", "units/tank_2.blkx"])
+
+
+def json_response(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def empty_choice_response(finish_reason: str):
+    message = SimpleNamespace(content="")
+    choice = SimpleNamespace(finish_reason=finish_reason, message=message)
+    return SimpleNamespace(choices=[choice])
 
 
 if __name__ == "__main__":

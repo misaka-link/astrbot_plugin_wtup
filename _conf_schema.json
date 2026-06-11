@@ -12,6 +12,12 @@
     "hint": "单位：秒。单次模型请求超过这个时间会视为失败。",
     "default": 120
   },
+  "model_concurrency": {
+    "type": "int",
+    "description": "模型请求并发数",
+    "hint": "允许同时进行的模型分析请求数量。默认 1 表示串行；大于 1 时会并发请求，但最终报告仍按文件分片顺序合并。",
+    "default": 1
+  },
   "target_groups": {
     "type": "list",
     "description": "推送群聊列表",

@@ -115,6 +115,7 @@ class WTUpdatePlugin(Star):
             f"推送目标: {len(self.settings.target_groups)} 个",
             f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
             f"单次模型请求字符限制: {self.settings.max_patch_chars or '不限制'}",
+            f"模型请求并发数: {self.settings.model_concurrency}",
             f"二次分析: {'开启' if self.settings.enable_second_pass_analysis else '关闭'}",
         ]
         await self._react_to_command_done(event)
@@ -328,7 +329,7 @@ class WTUpdatePlugin(Star):
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
                 f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if second_pass_enabled else 0)} 次，"
-                f"已合并为 1 份报告。"
+                f"并发 {self.settings.model_concurrency}，已合并为 1 份报告。"
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
