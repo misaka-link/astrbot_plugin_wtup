@@ -3,5 +3,4 @@ display_name: astrbot_plugin_wtup
 desc: 监控 gszabi99/War-Thunder-Datamine commit 更新，调用 AstrBot 模型分析并生成图片推送到群聊。
 version: v0.1.0
 author: 御坂_20001
-repo: ""
-
+repo: "https://github.com/misaka-link/astrbot_plugin_wtup"
