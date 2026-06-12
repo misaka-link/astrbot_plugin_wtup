@@ -12,6 +12,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME, PluginConfig
+from .errors import record_model_error
 from .normalize import safe_normalize_analysis
 from .responses import extract_response_text
 
@@ -22,30 +23,179 @@ async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, pr
     return safe_normalize_analysis(text)
 
 
-async def request_llm(context: Any, settings: PluginConfig, prompt: str, *, provider_id: str | None = None) -> Any:
-    provider_ids = settings.provider_fallback_ids(provider_id)
+async def request_llm(
+    context: Any,
+    settings: PluginConfig,
+    prompt: str,
+    *,
+    provider_id: str | None = None,
+    allow_fallback: bool = True,
+    summary: Any | None = None,
+    chunk: Any | None = None,
+) -> Any:
+    if not allow_fallback:
+        return await _request_llm_with_provider(
+            context,
+            settings,
+            prompt,
+            provider_id=provider_id,
+            provider_index=1,
+            provider_total=1,
+            allow_fallback=False,
+            summary=summary,
+            chunk=chunk,
+        )
+
+    provider_ids = request_provider_ids(settings, provider_id)
     last_error: BaseException | None = None
 
-    for requested_provider_id in provider_ids:
+    for index, requested_provider_id in enumerate(provider_ids):
         try:
-            provider = context.get_provider_by_id(provider_id=requested_provider_id)
-        except Exception as exc:
-            provider = None
-            logger.warning("[%s] 获取 Provider %s 失败: %s", PLUGIN_NAME, requested_provider_id, exc)
-        if not provider:
-            logger.warning("[%s] Provider %s 不存在，跳过该模型", PLUGIN_NAME, requested_provider_id)
-            continue
-
-        try:
-            return await _request_llm_once(context, settings, prompt, provider_id=requested_provider_id)
+            return await _request_llm_with_provider(
+                context,
+                settings,
+                prompt,
+                provider_id=requested_provider_id,
+                provider_index=index + 1,
+                provider_total=len(provider_ids),
+                allow_fallback=True,
+                summary=summary,
+                chunk=chunk,
+            )
         except Exception as exc:
             last_error = exc
-            logger.warning("[%s] Provider %s 请求失败，尝试备用模型: %s", PLUGIN_NAME, requested_provider_id, exc)
+            has_next = index + 1 < len(provider_ids)
+            logger.warning(
+                "[%s] Provider %s 请求失败，%s: %s",
+                PLUGIN_NAME,
+                provider_label(requested_provider_id),
+                "尝试备用模型" if has_next else "没有可用备用模型",
+                exc,
+            )
 
     if last_error is not None:
         raise RuntimeError("所有已配置模型请求失败") from last_error
 
-    return await _request_llm_once(context, settings, prompt)
+    # request_provider_ids always returns at least the default model.
+    return await _request_llm_with_provider(
+        context,
+        settings,
+        prompt,
+        provider_id=None,
+        provider_index=1,
+        provider_total=1,
+        allow_fallback=False,
+        summary=summary,
+        chunk=chunk,
+    )
+
+
+async def _request_llm_with_provider(
+    context: Any,
+    settings: PluginConfig,
+    prompt: str,
+    *,
+    provider_id: str | None,
+    provider_index: int,
+    provider_total: int,
+    allow_fallback: bool,
+    summary: Any | None,
+    chunk: Any | None,
+) -> Any:
+    normalized_provider_id = str(provider_id or "").strip()
+    if normalized_provider_id:
+        try:
+            provider = context.get_provider_by_id(provider_id=normalized_provider_id)
+        except Exception as exc:
+            wrapped = RuntimeError(f"获取 Provider {normalized_provider_id} 失败: {exc}")
+            _record_provider_request_error(
+                settings,
+                wrapped,
+                prompt=prompt,
+                provider_id=normalized_provider_id,
+                provider_index=provider_index,
+                provider_total=provider_total,
+                allow_fallback=allow_fallback,
+                summary=summary,
+                chunk=chunk,
+            )
+            raise wrapped from exc
+        if not provider:
+            exc = RuntimeError(f"Provider {normalized_provider_id} 不存在")
+            _record_provider_request_error(
+                settings,
+                exc,
+                prompt=prompt,
+                provider_id=normalized_provider_id,
+                provider_index=provider_index,
+                provider_total=provider_total,
+                allow_fallback=allow_fallback,
+                summary=summary,
+                chunk=chunk,
+            )
+            raise exc
+
+    try:
+        return await _request_llm_once(context, settings, prompt, provider_id=normalized_provider_id)
+    except Exception as exc:
+        _record_provider_request_error(
+            settings,
+            exc,
+            prompt=prompt,
+            provider_id=normalized_provider_id,
+            provider_index=provider_index,
+            provider_total=provider_total,
+            allow_fallback=allow_fallback,
+            summary=summary,
+            chunk=chunk,
+        )
+        raise
+
+
+def _record_provider_request_error(
+    settings: PluginConfig,
+    error: BaseException,
+    *,
+    prompt: str,
+    provider_id: str,
+    provider_index: int,
+    provider_total: int,
+    allow_fallback: bool,
+    summary: Any | None,
+    chunk: Any | None,
+) -> None:
+    record_model_error(
+        settings,
+        "provider_request_failed",
+        error,
+        summary=summary,
+        chunk=chunk,
+        extra={
+            "provider_id": provider_id or "默认模型",
+            "provider_index": provider_index,
+            "provider_total": provider_total,
+            "allow_fallback": allow_fallback,
+            "enable_streaming_llm_call": settings.enable_streaming_llm_call,
+            "prompt_chars": len(prompt),
+        },
+    )
+
+
+def request_provider_ids(settings: PluginConfig, provider_id: str | None = None) -> list[str | None]:
+    primary_provider_id = settings.provider_id if provider_id is None else str(provider_id or "").strip()
+    provider_ids: list[str | None] = [primary_provider_id or None]
+    seen = {provider_ids[0] or ""}
+    for backup_provider_id in settings.backup_provider_ids:
+        normalized = str(backup_provider_id or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        provider_ids.append(normalized)
+    return provider_ids
+
+
+def provider_label(provider_id: str | None) -> str:
+    return str(provider_id or "").strip() or "默认模型"
 
 
 async def _request_llm_once(

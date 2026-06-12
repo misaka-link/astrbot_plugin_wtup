@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -567,6 +568,141 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
             ["primary-provider", "backup-provider"],
         )
         self.assertEqual(results[0].analysis["summary"], "备用模型结果")
+
+    async def test_analysis_provider_failure_splits_before_backup_provider(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+            {"filename": "c.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+c"},
+            {"filename": "d.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+d"},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://example.invalid/compare",
+            total_commits=1,
+            total_files=len(files),
+            additions=4,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=8)],
+        )
+        context = SequenceContext(
+            [
+                RuntimeError("primary provider failed"),
+                json_response(analysis("武器调整", "前半")),
+                json_response(analysis("经济调整", "后半")),
+            ]
+        )
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = load_config(
+            {
+                "provider_id": "primary-provider",
+                "backup_provider_id_1": "backup-provider",
+                "max_retry_count": 1,
+            }
+        )
+
+        results = await analyze_chunks(context, settings, summary)
+
+        self.assertEqual(context.calls, 3)
+        self.assertEqual(
+            [kwargs["chat_provider_id"] for kwargs in context.kwargs],
+            ["primary-provider", "primary-provider", "primary-provider"],
+        )
+        items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
+        self.assertEqual(items, ["前半", "后半"])
+
+    async def test_analysis_uses_backup_after_primary_split_retries_are_exhausted(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://example.invalid/compare",
+            total_commits=1,
+            total_files=len(files),
+            additions=2,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=4)],
+        )
+        context = SequenceContext(
+            [
+                RuntimeError("primary original failed"),
+                RuntimeError("primary first split failed"),
+                RuntimeError("primary second split failed"),
+                json_response(analysis("武器调整", "备用模型结果")),
+            ]
+        )
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = load_config(
+            {
+                "provider_id": "primary-provider",
+                "backup_provider_id_1": "backup-provider",
+                "max_retry_count": 1,
+            }
+        )
+
+        results = await analyze_chunks(context, settings, summary)
+
+        self.assertEqual(context.calls, 4)
+        self.assertEqual(
+            [kwargs["chat_provider_id"] for kwargs in context.kwargs],
+            ["primary-provider", "primary-provider", "primary-provider", "backup-provider"],
+        )
+        self.assertEqual(results[0].analysis["summary"], "备用模型结果")
+
+    async def test_request_llm_records_provider_failure_before_fallback(self) -> None:
+        records = []
+        context = SequenceContext(
+            [
+                RuntimeError("primary provider failed"),
+                json_response(analysis("武器调整", "备用模型结果")),
+            ]
+        )
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = replace(
+            load_config(
+                {
+                    "provider_id": "primary-provider",
+                    "backup_provider_id_1": "backup-provider",
+                }
+            ),
+            model_error_recorder=lambda stage, error, metadata: records.append((stage, str(error), metadata)),
+        )
+
+        response = await request_llm(context, settings, "请分析")
+
+        self.assertEqual(json.loads(response)["summary"], "备用模型结果")
+        self.assertEqual(records[0][0], "provider_request_failed")
+        self.assertEqual(records[0][1], "primary provider failed")
+        self.assertEqual(records[0][2]["provider_id"], "primary-provider")
+        self.assertEqual(records[0][2]["provider_index"], 1)
+        self.assertEqual(records[0][2]["provider_total"], 2)
+
+    async def test_request_llm_uses_default_model_before_backup_when_primary_is_empty(self) -> None:
+        context = SequenceContext(
+            [
+                RuntimeError("default provider failed"),
+                json_response(analysis("武器调整", "备用模型结果")),
+            ]
+        )
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = load_config({"backup_provider_id_1": "backup-provider"})
+
+        response = await request_llm(context, settings, "请分析")
+
+        self.assertEqual(json.loads(response)["summary"], "备用模型结果")
+        self.assertEqual(context.calls, 2)
+        self.assertNotIn("chat_provider_id", context.kwargs[0])
+        self.assertEqual(context.kwargs[1]["chat_provider_id"], "backup-provider")
 
     async def test_request_llm_uses_non_streaming_call_by_default(self) -> None:
         context = SequenceContext([json_response(analysis("武器调整", "非流式结果"))])

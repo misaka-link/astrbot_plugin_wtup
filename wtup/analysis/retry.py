@@ -77,7 +77,54 @@ async def analyze_chunk_with_retry(
     chunk: DiffChunk,
     semaphore: asyncio.Semaphore,
 ) -> ChunkAnalysis:
-    return await analyze_chunk_with_retry_attempt(context, settings, summary, chunk, semaphore, attempt=0)
+    provider_ids = analysis_request_provider_ids(settings)
+    provider_errors: list[str] = []
+    last_result: ChunkAnalysis | None = None
+
+    for provider_index, provider_id in enumerate(provider_ids):
+        result = await analyze_chunk_with_retry_attempt(
+            context,
+            settings,
+            summary,
+            chunk,
+            semaphore,
+            attempt=0,
+            provider_id=provider_id,
+        )
+        if not chunk_result_needs_provider_fallback(result):
+            return result
+
+        last_result = result
+        provider_errors.append(f"{provider_label(provider_id)}: {chunk_result_failure_text(result)}")
+        if provider_index + 1 < len(provider_ids):
+            logger.warning(
+                "[%s] Provider %s 分析 chunk %d/%d 完成拆分重试后仍失败，尝试备用模型 %s: %s",
+                PLUGIN_NAME,
+                provider_label(provider_id),
+                chunk.index,
+                chunk.total,
+                provider_label(provider_ids[provider_index + 1]),
+                chunk_result_failure_text(result),
+            )
+
+    if last_result is None:
+        return ChunkAnalysis(
+            chunk.index,
+            chunk.total,
+            fallback_analysis("没有可用模型 Provider，相关文件需要结合 GitHub 原始 diff 复核。"),
+            error="没有可用模型 Provider",
+        )
+
+    if len(provider_errors) <= 1:
+        return last_result
+    return ChunkAnalysis(
+        last_result.chunk_index,
+        last_result.chunk_total,
+        last_result.analysis,
+        error="; ".join(provider_errors),
+        raw_text=last_result.raw_text,
+        token_usage=last_result.token_usage,
+    )
 
 async def analyze_chunk_with_retry_attempt(
     context: Any,
@@ -87,9 +134,10 @@ async def analyze_chunk_with_retry_attempt(
     semaphore: asyncio.Semaphore,
     *,
     attempt: int,
+    provider_id: str | None = None,
 ) -> ChunkAnalysis:
     try:
-        return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
+        return await analyze_chunk_once(context, settings, summary, chunk, semaphore, provider_id=provider_id)
     except Exception as exc:
         max_retry_count = max(0, int(getattr(settings, "max_retry_count", 2) or 0))
         if len(chunk.files) <= 1 or attempt >= max_retry_count:
@@ -99,11 +147,16 @@ async def analyze_chunk_with_retry_attempt(
                 exc,
                 summary=summary,
                 chunk=chunk,
-                extra={"attempt": attempt, "max_retry_count": max_retry_count},
+                extra={
+                    "attempt": attempt,
+                    "max_retry_count": max_retry_count,
+                    "provider_id": provider_label(provider_id),
+                },
             )
             logger.warning(
-                "[%s] 模型分析失败 chunk %d/%d，已重试 %d/%d，无法继续拆分: %s",
+                "[%s] Provider %s 模型分析失败 chunk %d/%d，已重试 %d/%d，无法继续拆分: %s",
                 PLUGIN_NAME,
+                provider_label(provider_id),
                 chunk.index,
                 chunk.total,
                 attempt,
@@ -124,11 +177,17 @@ async def analyze_chunk_with_retry_attempt(
             exc,
             summary=summary,
             chunk=chunk,
-            extra={"attempt": attempt + 1, "max_retry_count": max_retry_count, "retry_chunks": len(retry_chunks)},
+            extra={
+                "attempt": attempt + 1,
+                "max_retry_count": max_retry_count,
+                "retry_chunks": len(retry_chunks),
+                "provider_id": provider_label(provider_id),
+            },
         )
         logger.warning(
-            "[%s] 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试 (第 %d/%d 次): %s",
+            "[%s] Provider %s 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试 (第 %d/%d 次): %s",
             PLUGIN_NAME,
+            provider_label(provider_id),
             chunk.index,
             chunk.total,
             len(retry_chunks),
@@ -145,6 +204,7 @@ async def analyze_chunk_with_retry_attempt(
                     retry_chunk,
                     semaphore,
                     attempt=attempt + 1,
+                    provider_id=provider_id,
                 )
                 for retry_chunk in retry_chunks
             ]
@@ -171,12 +231,28 @@ async def analyze_chunk_without_retry(
     summary: DiffSummary,
     chunk: DiffChunk,
     semaphore: asyncio.Semaphore,
+    *,
+    provider_id: str | None = None,
 ) -> ChunkAnalysis:
     try:
-        return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
+        return await analyze_chunk_once(context, settings, summary, chunk, semaphore, provider_id=provider_id)
     except Exception as exc:
-        record_model_error(settings, "chunk_retry_failed", exc, summary=summary, chunk=chunk)
-        logger.warning("[%s] 拆分重试仍失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+        record_model_error(
+            settings,
+            "chunk_retry_failed",
+            exc,
+            summary=summary,
+            chunk=chunk,
+            extra={"provider_id": provider_label(provider_id)},
+        )
+        logger.warning(
+            "[%s] Provider %s 拆分重试仍失败 chunk %d/%d: %s",
+            PLUGIN_NAME,
+            provider_label(provider_id),
+            chunk.index,
+            chunk.total,
+            exc,
+        )
         return ChunkAnalysis(
             chunk.index,
             chunk.total,
@@ -190,10 +266,20 @@ async def analyze_chunk_once(
     summary: DiffSummary,
     chunk: DiffChunk,
     semaphore: asyncio.Semaphore,
+    *,
+    provider_id: str | None = None,
 ) -> ChunkAnalysis:
     prompt = build_prompt(settings, summary, chunk)
     async with semaphore:
-        response = await request_llm(context, settings, prompt)
+        response = await request_llm(
+            context,
+            settings,
+            prompt,
+            provider_id=provider_id,
+            allow_fallback=False,
+            summary=summary,
+            chunk=chunk,
+        )
     token_usage = extract_token_usage(response)
     ensure_usable_llm_response(response)
     raw_text = extract_response_text(response)
@@ -215,6 +301,36 @@ def split_chunk_for_retry(chunk: DiffChunk) -> list[DiffChunk]:
         DiffChunk(index=index + 1, total=total, files=files, patch_chars=sum(len(str(item.get("patch") or "")) + len(str(item.get("filename") or "")) for item in files))
         for index, files in enumerate(groups)
     ]
+
+def analysis_request_provider_ids(settings: PluginConfig) -> list[str | None]:
+    provider_ids: list[str | None] = [str(settings.provider_id or "").strip() or None]
+    seen = {provider_ids[0] or ""}
+    for provider_id in settings.backup_provider_ids:
+        normalized = str(provider_id or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        provider_ids.append(normalized)
+    return provider_ids
+
+def provider_label(provider_id: str | None) -> str:
+    return str(provider_id or "").strip() or "默认模型"
+
+def chunk_result_needs_provider_fallback(result: ChunkAnalysis) -> bool:
+    if str(result.error or "").strip():
+        return True
+    tags = result.analysis.get("tags") if isinstance(result.analysis, dict) else []
+    if isinstance(tags, list):
+        return any(str(tag).strip() == "需复核" for tag in tags)
+    return False
+
+def chunk_result_failure_text(result: ChunkAnalysis) -> str:
+    error = str(result.error or "").strip()
+    if error:
+        return error
+    if isinstance(result.analysis, dict):
+        return str(result.analysis.get("summary") or "模型分析结果需要复核").strip()
+    return "模型分析结果需要复核"
 
 async def refine_chunk_analyses(
     context: Any,
