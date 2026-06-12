@@ -177,6 +177,8 @@ class UpdateCheckService:
 
             sent_count = 0
             failed_count = 0
+            report_sent_count = 0
+            report_failed_count = 0
 
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
@@ -305,6 +307,8 @@ class UpdateCheckService:
                     )
                     sent_count += ok
                     failed_count += failed
+                    report_sent_count += ok
+                    report_failed_count += failed
                     logger.warning(
                         "[%s] 推送完成%s: 成功 %d，失败 %d",
                         PLUGIN_NAME,
@@ -366,15 +370,23 @@ class UpdateCheckService:
                     for report in report_artifacts
                 ],
                 manual=manual,
-                sent_to_groups=bool(send_to_groups and push_targets),
+                sent_to_groups=report_sent_count > 0,
                 target_groups=push_targets,
                 sent_count=sent_count,
                 failed_count=failed_count,
                 token_usage=token_usage,
             )
 
-            if not manual or send_to_groups:
+            should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and report_sent_count > 0)
+            if should_mark_seen:
                 self.runtime.save_seen_commit(latest.sha)
+            elif send_to_groups and push_targets:
+                logger.warning(
+                    "[%s] 本次报告未成功发送到任何目标，保留 commit 进度在 %s，下次循环继续重试 %s",
+                    PLUGIN_NAME,
+                    short_sha(previous_sha),
+                    short_sha(latest.sha),
+                )
 
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
@@ -383,12 +395,17 @@ class UpdateCheckService:
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
+                if push_targets and report_sent_count <= 0:
+                    message += " 报告未成功发出，未标记本次更新完成，下次循环会继续重试。"
             warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
             result = {
                 "message": message,
                 "image_path": image_path,
                 "log_path": log_path,
                 "append_text": append_text,
+                "commit_marked_complete": should_mark_seen,
+                "report_sent_count": report_sent_count,
+                "report_failed_count": report_failed_count,
                 "reports": [
                     {
                         "key": report.key,
@@ -402,6 +419,8 @@ class UpdateCheckService:
                 ],
             }
             if image_path:
+                return result
+            if send_to_groups:
                 return result
             result["message"] = fallback_text or message
             return result
