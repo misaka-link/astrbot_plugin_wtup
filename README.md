@@ -16,17 +16,24 @@ mode: commit
 
 后台配置项：
 
-- `provider_id`：模型 Provider ID，留空使用默认模型。
+- `provider_id`：分析模型 Provider ID，留空使用默认模型。
+- `summary_provider_id`：总结模型 Provider ID，留空使用分析模型；分析模型也留空时使用默认模型。
 - `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
+- `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
-- `enable_second_pass_analysis`：是否启用二次分析，默认关闭。
+- `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果。
+- `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
+- `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。
+- `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
 - `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
-- `max_patch_chars`：每次模型请求最大 diff 字符数，默认 0 表示不限制。
+- `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制。
+- `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`。
+- `max_retry_count`：最大重试次数，默认 2。每次重试都会把失败任务按文件边界拆成两半。
 
 `github_token` 获取位置：
 
@@ -70,28 +77,48 @@ https://github.com/settings/tokens
 
 ## 模型请求拆分规则
 
-`max_files_per_report` 和 `max_patch_chars` 默认都是 `0`，表示不限制。
+`max_files_per_report` 和 `max_input_tokens` 默认都是 `0`，表示不限制。
 
-如果其中任意一个设置为大于 `0`，插件会按文件数和 diff 字符数拆分模型请求，并尽量把同目录、同后缀且文件名相近的改动放在同一个请求里。每次请求都会单独调用一次模型，所有分析结果会按分片顺序合并成一份报告，最终只生成一张图片并推送一次。
+如果其中任意一个设置为大于 `0`，插件会先按文件数估算基础分片数量，再按完整模型输入估算 token。某一次请求超过最大 token 输入时，会在保证文件完整性的前提下继续拆分任务。拆分前仍会优先把同目录、同后缀且文件名相近的改动排在一起。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成一份报告，最终只生成一张图片并推送一次。
+
+插件只在文件边界拆分，不会拆开单个文件 patch。由于要保证文件完整性，实际每个分片的文件数或 token 估算值可能会围绕配置值浮动；如果某个文件本身超过 `max_input_tokens`，它会完整进入某个分片，不会被截断。
+
+`max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
 
-如果某个模型请求失败，例如模型上下文超限、接口报错、超时或返回空内容，插件会把这个失败分片的文件数量减半后重新请求一次。重试仍然遵守 `model_concurrency` 限制；如果分片只有 1 个文件或拆半重试仍失败，才会生成需复核的兜底分析。
+如果某个模型请求失败，例如模型上下文超限、接口报错、超时或返回空内容，插件会把这个失败分片的文件数量减半后重试。`max_retry_count` 控制最多重试几轮，默认 2；每一轮仍然只按文件边界拆分，并遵守 `model_concurrency` 限制。如果分片只有 1 个文件或达到最大重试次数，才会生成需复核的兜底分析。
 
-如果模型返回内容不是有效 JSON，插件会强制再发起一次模型请求，要求模型基于原始输出修复为严格 JSON。这个 JSON 修复请求不受 `enable_second_pass_analysis` 开关影响；如果修复仍失败，才会生成需复核的兜底分析。
+如果模型返回内容不是有效 JSON，插件会强制再发起一次模型请求，要求模型基于原始输出修复为严格 JSON。这个 JSON 修复请求不受“是否启动总结模型”开关影响；如果修复仍失败，才会生成需复核的兜底分析。
 
-`enable_second_pass_analysis` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
+`enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
 
-开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次模型对合并结果做二次整理。二次分析只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果二次分析失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
+开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次总结模型整理最终报告。总结模型只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果总结模型失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
 
-如果开启了二次分析，但程序初步合并分片结果时发生异常，插件不会直接中断。本次检查会把各分片的分析 JSON、分片错误信息和原始模型输出文本交给二次分析模型生成最终报告；如果这一步仍然失败，才会生成需复核的兜底报告。
+如果开启了总结模型，但程序初步合并分片结果时发生异常，插件不会直接中断。本次检查会把各分片的分析 JSON、分片错误信息和原始模型输出文本交给总结模型生成最终报告；如果这一步仍然失败，才会生成需复核的兜底报告。
+
+总结模型、JSON 修复和失败拆分重试是三套独立机制：总结模型只负责最终整理；JSON 修复只负责把非 JSON 输出修复为严格 JSON；失败拆分重试只处理模型请求失败。
+
+## 推送附加内容
+
+开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息。默认模板示例：
+
+```text
+{version_range} 分析完成
+消耗token:{token_count}
+耗时{elapsed_minutes}分钟
+分析模型:{analysis_model}
+总结模型:{summary_model}
+```
+
+配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；其他 `unified_msg_origin` 会兜底发送日志文本。
 
 ## 数据持久化
 
 插件会在 AstrBot 插件数据目录中保存运行数据：
 
 - `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。
-- `logs/`：保存每次最终文本报告。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
+- `logs/`：保存每次最终文本报告，不再记录图片文件路径。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
 - `images/`：保存渲染后的报告图片。
 
 ## 首次运行

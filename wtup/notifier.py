@@ -31,6 +31,10 @@ def _build_onebot_message(*, image_path: Path | None, fallback_text: str) -> lis
     return [{"type": "text", "data": {"text": fallback_text}}]
 
 
+def _build_text_message(text: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "data": {"text": text}}]
+
+
 async def _collect_call_targets(context: Any) -> list[Any]:
     seen: set[int] = set()
     call_targets: list[Any] = []
@@ -61,7 +65,7 @@ async def _collect_call_targets(context: Any) -> list[Any]:
                 bot = await bot
             add(bot)
         except Exception as exc:
-            logger.debug("[%s] 获取 context bot 失败: %s", PLUGIN_NAME, exc)
+            logger.warning("[%s] 获取 context bot 失败: %s", PLUGIN_NAME, exc)
 
     platform_managers = [
         getattr(context, "platform_manager", None),
@@ -77,7 +81,7 @@ async def _collect_call_targets(context: Any) -> list[Any]:
             if inspect.isawaitable(platforms):
                 platforms = await platforms
         except Exception as exc:
-            logger.debug("[%s] 获取平台实例失败: %s", PLUGIN_NAME, exc)
+            logger.warning("[%s] 获取平台实例失败: %s", PLUGIN_NAME, exc)
             continue
 
         if not isinstance(platforms, (list, tuple)):
@@ -94,7 +98,7 @@ async def _collect_call_targets(context: Any) -> list[Any]:
                     add(client)
                     add(getattr(client, "api", None))
                 except Exception as exc:
-                    logger.debug("[%s] 获取平台客户端失败: %s", PLUGIN_NAME, exc)
+                    logger.warning("[%s] 获取平台客户端失败: %s", PLUGIN_NAME, exc)
             for attr in ("bot", "client", "api"):
                 candidate = getattr(platform, attr, None)
                 add(candidate)
@@ -179,6 +183,54 @@ async def _send_group_message_by_id(
     raise RuntimeError("未找到可用的 OneBot call_action 客户端")
 
 
+async def _send_group_text_by_id(
+    context: Any,
+    group_id: str,
+    *,
+    text: str,
+    extra_call_targets: list[Any] | None,
+) -> None:
+    message = _build_text_message(text)
+    errors: list[str] = []
+
+    for call_target in await _iter_call_targets(context, extra_call_targets):
+        try:
+            await _call_action(call_target, "send_group_msg", group_id=int(group_id), message=message)
+            return
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError("未找到可用的 OneBot call_action 客户端")
+
+
+async def _upload_group_file_by_id(
+    context: Any,
+    group_id: str,
+    *,
+    file_path: Path,
+    extra_call_targets: list[Any] | None,
+) -> None:
+    errors: list[str] = []
+    for call_target in await _iter_call_targets(context, extra_call_targets):
+        try:
+            await _call_action(
+                call_target,
+                "upload_group_file",
+                group_id=int(group_id),
+                file=str(file_path),
+                name=file_path.name,
+            )
+            return
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError("未找到可用的 OneBot call_action 客户端")
+
+
 async def push_report(
     context: Any,
     targets: list[str],
@@ -216,4 +268,73 @@ async def push_report(
         except Exception as exc:
             failed += 1
             logger.warning("[%s] 推送到 %s 失败: %s", PLUGIN_NAME, target, exc)
+    return success, failed
+
+
+async def push_text(
+    context: Any,
+    targets: list[str],
+    *,
+    text: str,
+    event: Any | None = None,
+) -> tuple[int, int]:
+    success = 0
+    failed = 0
+    extra_call_targets = await _collect_event_call_targets(event) if event is not None else None
+    for target in targets:
+        target = str(target).strip()
+        if not target:
+            continue
+        try:
+            if _is_group_id(target):
+                await _send_group_text_by_id(
+                    context,
+                    target,
+                    text=text,
+                    extra_call_targets=extra_call_targets,
+                )
+            else:
+                if MessageChain is None:
+                    raise RuntimeError("AstrBot MessageChain is unavailable")
+                await context.send_message(target, MessageChain().message(text))
+            success += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("[%s] 推送文字到 %s 失败: %s", PLUGIN_NAME, target, exc)
+    return success, failed
+
+
+async def push_log_file(
+    context: Any,
+    targets: list[str],
+    *,
+    log_path: Path,
+    event: Any | None = None,
+) -> tuple[int, int]:
+    success = 0
+    failed = 0
+    extra_call_targets = await _collect_event_call_targets(event) if event is not None else None
+    fallback_text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    for target in targets:
+        target = str(target).strip()
+        if not target:
+            continue
+        try:
+            if _is_group_id(target):
+                await _upload_group_file_by_id(
+                    context,
+                    target,
+                    file_path=log_path,
+                    extra_call_targets=extra_call_targets,
+                )
+            else:
+                if not fallback_text:
+                    raise RuntimeError("日志文件不存在或为空")
+                if MessageChain is None:
+                    raise RuntimeError("AstrBot MessageChain is unavailable")
+                await context.send_message(target, MessageChain().message(fallback_text))
+            success += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("[%s] 推送日志文件到 %s 失败: %s", PLUGIN_NAME, target, exc)
     return success, failed

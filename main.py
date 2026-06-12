@@ -14,14 +14,16 @@ try:
     from .wtup.analyzer import (
         analyze_chunks,
         fallback_analysis,
+        estimate_chunk_input_tokens,
         merge_chunk_analyses,
         refine_chunk_analyses,
         refine_merged_analysis,
+        split_chunks_by_token_limit,
     )
     from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from .wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from .wtup.github_client import GitHubClient, GitHubRequestError
-    from .wtup.notifier import push_report
+    from .wtup.notifier import push_log_file, push_report, push_text
     from .wtup.report_log import build_report_log_filename, sanitize_filename
     from .wtup.renderer import build_report_html, render_plain_text, render_report_image
     from .wtup.state_store import StateStore
@@ -29,14 +31,16 @@ except ImportError:
     from wtup.analyzer import (
         analyze_chunks,
         fallback_analysis,
+        estimate_chunk_input_tokens,
         merge_chunk_analyses,
         refine_chunk_analyses,
         refine_merged_analysis,
+        split_chunks_by_token_limit,
     )
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from wtup.diff_collector import DiffChunk, build_diff_summary, short_sha
     from wtup.github_client import GitHubClient, GitHubRequestError
-    from wtup.notifier import push_report
+    from wtup.notifier import push_log_file, push_report, push_text
     from wtup.report_log import build_report_log_filename, sanitize_filename
     from wtup.renderer import build_report_html, render_plain_text, render_report_image
     from wtup.state_store import StateStore
@@ -44,6 +48,17 @@ except ImportError:
 
 COMMAND_RECEIVED_EMOJI_ID = "289"
 COMMAND_DONE_EMOJI_ID = "124"
+LOG_SEPARATOR = "=============="
+
+
+def warning_log(message: str, *args: Any, exc_info: bool = False) -> None:
+    logger.warning("%s", LOG_SEPARATOR)
+    logger.warning(message, *args, exc_info=exc_info)
+    logger.warning("%s", LOG_SEPARATOR)
+
+
+def _ceil_minutes(seconds: float) -> int:
+    return max(1, int((max(0.0, seconds) + 59) // 60))
 
 
 def _get_event_message_id(event: AstrMessageEvent) -> str:
@@ -73,7 +88,7 @@ def _event_is_admin(event: AstrMessageEvent) -> bool:
     try:
         return bool(is_admin())
     except Exception as exc:
-        logger.debug("[%s] 检查管理员权限失败: %s", PLUGIN_NAME, exc)
+        logger.warning("[%s] 检查管理员权限失败: %s", PLUGIN_NAME, exc)
         return False
 
 
@@ -93,7 +108,7 @@ class WTUpdatePlugin(Star):
 
     async def initialize(self):
         self._task = asyncio.create_task(self._monitor_loop())
-        logger.info(
+        logger.warning(
             "[%s] 已启动，监控 %s@%s，间隔 %s 分钟，推送目标 %s 个",
             PLUGIN_NAME,
             REPO_FULL_NAME,
@@ -118,9 +133,10 @@ class WTUpdatePlugin(Star):
             f"检查间隔: {self.settings.monitor_interval_minutes} 分钟",
             f"推送目标: {len(self.settings.target_groups)} 个",
             f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
-            f"单次模型请求字符限制: {self.settings.max_patch_chars or '不限制'}",
+            f"单次模型请求 token 输入限制: {self.settings.max_input_token_limit or '不限制'}",
             f"模型请求并发数: {self.settings.model_concurrency}",
-            f"二次分析: {'开启' if self.settings.enable_second_pass_analysis else '关闭'}",
+            f"总结模型: {'启动' if self.settings.enable_summary_model else '关闭'}",
+            f"最大重试次数: {self.settings.max_retry_count}",
         ]
         await self._react_to_command_done(event)
         yield event.plain_result("\n".join(lines))
@@ -152,7 +168,7 @@ class WTUpdatePlugin(Star):
         try:
             result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all, event=event)
         except Exception as exc:
-            logger.exception("[%s] 手动检查失败: %s", PLUGIN_NAME, exc)
+            logger.warning("[%s] 手动检查失败: %s", PLUGIN_NAME, exc, exc_info=True)
             yield event.plain_result(f"检查失败：{exc}")
             return
 
@@ -186,7 +202,7 @@ class WTUpdatePlugin(Star):
             )
             return True
         except Exception as exc:
-            logger.debug("[%s] 更新表情失败，可能当前平台或协议端不支持: %s", PLUGIN_NAME, exc)
+            logger.warning("[%s] 更新表情失败，可能当前平台或协议端不支持: %s", PLUGIN_NAME, exc)
             return False
 
     async def _react_to_command_received(self, event: AstrMessageEvent) -> bool:
@@ -203,7 +219,7 @@ class WTUpdatePlugin(Star):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception("[%s] 定时检查失败: %s", PLUGIN_NAME, exc)
+                logger.warning("[%s] 定时检查失败: %s", PLUGIN_NAME, exc, exc_info=True)
             await asyncio.sleep(self.settings.monitor_interval_minutes * 60)
 
     async def check_once(
@@ -215,12 +231,13 @@ class WTUpdatePlugin(Star):
         event: AstrMessageEvent | None = None,
     ) -> dict[str, Any]:
         async with self._check_lock:
-            logger.info("[%s] ========== 开始执行检查%s ==========", PLUGIN_NAME, "（手动）" if manual else "（定时）")
+            started_at = time.monotonic()
+            warning_log("[%s] 开始执行检查%s", PLUGIN_NAME, "（手动）" if manual else "（定时）")
 
             client = GitHubClient(token=self.settings.github_token)
-            logger.info("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
+            logger.warning("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
             latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
-            logger.info("[%s] 已完成获取最新 commit: %s", PLUGIN_NAME, short_sha(latest.sha))
+            logger.warning("[%s] 已完成获取最新 commit: %s", PLUGIN_NAME, short_sha(latest.sha))
             if not latest.sha:
                 return {"message": "未获取到最新 commit。"}
 
@@ -232,7 +249,7 @@ class WTUpdatePlugin(Star):
                     previous_sha = latest.parents[0]
                 else:
                     self._save_seen_commit(latest.sha)
-                    logger.info("[%s] 首次检查，已建立基线: %s", PLUGIN_NAME, short_sha(latest.sha))
+                    logger.warning("[%s] 首次检查，已建立基线: %s", PLUGIN_NAME, short_sha(latest.sha))
                     return {
                         "message": (
                             f"首次检查已建立基线：{short_sha(latest.sha)}。\n"
@@ -242,7 +259,7 @@ class WTUpdatePlugin(Star):
 
             if previous_sha == latest.sha and not force_latest:
                 self._save_seen_commit(latest.sha)
-                logger.info("[%s] 没有新 commit，跳过", PLUGIN_NAME)
+                logger.warning("[%s] 没有新 commit，跳过", PLUGIN_NAME)
                 return {"message": f"没有新 commit，当前为 {short_sha(latest.sha)}。"}
 
             if force_latest and latest.parents:
@@ -251,49 +268,57 @@ class WTUpdatePlugin(Star):
             if send_to_groups and not self.settings.target_groups:
                 return {"message": "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"}
 
-            logger.info("[%s] 步骤 2/5: 对比 commits (%s...%s)...", PLUGIN_NAME, short_sha(previous_sha), short_sha(latest.sha))
+            logger.warning("[%s] 步骤 2/5: 对比 commits (%s...%s)...", PLUGIN_NAME, short_sha(previous_sha), short_sha(latest.sha))
             compare_payload = await asyncio.to_thread(client.compare_commits, REPO_FULL_NAME, previous_sha, latest.sha)
-            logger.info("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
+            logger.warning("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
 
-            logger.info("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
+            logger.warning("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
             try:
                 raw_diff_text = await asyncio.to_thread(client.compare_diff_text, REPO_FULL_NAME, previous_sha, latest.sha)
-                logger.info("[%s] 已完成获取原始 diff", PLUGIN_NAME)
+                logger.warning("[%s] 已完成获取原始 diff", PLUGIN_NAME)
             except GitHubRequestError as exc:
                 raw_diff_text = ""
                 logger.warning("[%s] 获取原始 diff 失败，使用 compare API 文件列表兜底: %s", PLUGIN_NAME, exc)
 
-            logger.info("[%s] 步骤 4/5: 构建 diff 摘要...", PLUGIN_NAME)
+            logger.warning("[%s] 步骤 4/5: 构建 diff 摘要...", PLUGIN_NAME)
             summary = build_diff_summary(
                 compare_payload,
                 raw_diff_text=raw_diff_text,
                 max_files=self.settings.max_files_per_report,
-                max_chars=self.settings.max_patch_chars,
+                max_chars=0,
             )
             if not summary.head_sha:
                 summary = build_diff_summary(
                     {**compare_payload, "sha": latest.sha},
                     raw_diff_text=raw_diff_text,
                     max_files=self.settings.max_files_per_report,
-                    max_chars=self.settings.max_patch_chars,
+                    max_chars=0,
                 )
-            logger.info("[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 次模型请求", PLUGIN_NAME, summary.total_files, len(summary.chunks))
+            summary = split_chunks_by_token_limit(self.settings, summary)
+            input_token_count = sum(estimate_chunk_input_tokens(self.settings, summary, chunk) for chunk in summary.chunks)
+            logger.warning(
+                "[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 次模型请求，预计输入 %d token",
+                PLUGIN_NAME,
+                summary.total_files,
+                len(summary.chunks),
+                input_token_count,
+            )
 
             sent_count = 0
             failed_count = 0
 
-            logger.info("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
+            logger.warning("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
-            second_pass_enabled = self.settings.enable_second_pass_analysis and len(summary.chunks) > 1
+            summary_model_enabled = self.settings.enable_summary_model
             try:
                 analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
-                if second_pass_enabled:
-                    logger.info("[%s] 已启用二次分析，正在整理合并报告...", PLUGIN_NAME)
+                if summary_model_enabled:
+                    logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
                     analysis = await refine_merged_analysis(self.context, self.settings, summary, analysis)
             except Exception as exc:
                 logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
-                if second_pass_enabled:
-                    logger.info("[%s] 已启用二次分析，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
+                if summary_model_enabled:
+                    logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
                     analysis = await refine_chunk_analyses(
                         self.context,
                         self.settings,
@@ -320,9 +345,11 @@ class WTUpdatePlugin(Star):
             image_path = await render_report_image(self, html_text, self.image_dir)
             fallback_text = render_plain_text(summary, report_chunk, analysis)
             log_path = self._save_report_log(summary, analysis, fallback_text, image_path=image_path)
+            elapsed_seconds = time.monotonic() - started_at
+            elapsed_minutes = _ceil_minutes(elapsed_seconds)
 
             if send_to_groups and self.settings.target_groups:
-                logger.info("[%s] 推送合并报告到 %d 个群聊...", PLUGIN_NAME, len(self.settings.target_groups))
+                logger.warning("[%s] 推送合并报告到 %d 个群聊...", PLUGIN_NAME, len(self.settings.target_groups))
                 ok, failed = await push_report(
                     self.context,
                     self.settings.target_groups,
@@ -332,7 +359,33 @@ class WTUpdatePlugin(Star):
                 )
                 sent_count += ok
                 failed_count += failed
-                logger.info("[%s] 推送完成合并报告: 成功 %d，失败 %d", PLUGIN_NAME, ok, failed)
+                logger.warning("[%s] 推送完成合并报告: 成功 %d，失败 %d", PLUGIN_NAME, ok, failed)
+                if self.settings.enable_push_append_text:
+                    append_text = self._build_push_append_text(
+                        analysis=analysis,
+                        token_count=input_token_count,
+                        elapsed_minutes=elapsed_minutes,
+                        summary_model_enabled=summary_model_enabled,
+                    )
+                    text_ok, text_failed = await push_text(
+                        self.context,
+                        self.settings.target_groups,
+                        text=append_text,
+                        event=event,
+                    )
+                    sent_count += text_ok
+                    failed_count += text_failed
+                    logger.warning("[%s] 追加文字推送完成: 成功 %d，失败 %d", PLUGIN_NAME, text_ok, text_failed)
+
+            if send_to_groups and self.settings.analysis_file_groups:
+                logger.warning("[%s] 推送分析日志文件到 %d 个群聊...", PLUGIN_NAME, len(self.settings.analysis_file_groups))
+                file_ok, file_failed = await push_log_file(
+                    self.context,
+                    self.settings.analysis_file_groups,
+                    log_path=log_path,
+                    event=event,
+                )
+                logger.warning("[%s] 分析日志文件推送完成: 成功 %d，失败 %d", PLUGIN_NAME, file_ok, file_failed)
 
             self._save_task_state(
                 summary=summary,
@@ -350,12 +403,12 @@ class WTUpdatePlugin(Star):
 
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
-                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if second_pass_enabled else 0)} 次，"
+                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if summary_model_enabled else 0)} 次，"
                 f"并发 {self.settings.model_concurrency}，已合并为 1 份报告。"
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
-            logger.info("[%s] ========== 检查完成: %s ==========", PLUGIN_NAME, message)
+            warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
             if image_path:
                 return {"message": message, "image_path": image_path}
             return {"message": fallback_text or message}
@@ -389,14 +442,45 @@ class WTUpdatePlugin(Star):
         ]
         if summary.compare_url:
             header.append(f"Compare: {summary.compare_url}")
-        if image_path:
-            header.append(f"图片: {image_path}")
         header.extend(["", str(fallback_text or "").strip(), ""])
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         output_path.write_text("\n".join(header), encoding="utf-8")
-        logger.info("[%s] 已保存最终报告日志: %s", PLUGIN_NAME, output_path)
+        logger.warning("[%s] 已保存最终报告日志: %s", PLUGIN_NAME, output_path)
         return output_path
+
+    def _build_push_append_text(
+        self,
+        *,
+        analysis: dict[str, Any],
+        token_count: int,
+        elapsed_minutes: int,
+        summary_model_enabled: bool,
+    ) -> str:
+        version_range = str(analysis.get("report_title") or "").strip() or "版本->版本"
+        analysis_model = self.settings.provider_id or "默认模型"
+        summary_model = self.settings.effective_summary_provider_id or "默认模型"
+        if not summary_model_enabled:
+            summary_model = "未启动"
+        template = self.settings.push_append_text_template
+        try:
+            text = template.format(
+                version_range=version_range,
+                token_count=token_count,
+                elapsed_minutes=elapsed_minutes,
+                analysis_model=analysis_model,
+                summary_model=summary_model,
+            )
+        except Exception as exc:
+            logger.warning("[%s] 追加文字模板格式化失败，使用默认内容: %s", PLUGIN_NAME, exc)
+            text = (
+                f"{version_range} 分析完成\n"
+                f"消耗token:{token_count}\n"
+                f"耗时{elapsed_minutes}分钟\n"
+                f"分析模型:{analysis_model}\n"
+                f"总结模型:{summary_model}"
+            )
+        return str(text or "").strip()
 
     def _save_task_state(
         self,
@@ -450,4 +534,4 @@ class WTUpdatePlugin(Star):
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("[%s] 插件已卸载", PLUGIN_NAME)
+        logger.warning("[%s] 插件已卸载", PLUGIN_NAME)

@@ -67,35 +67,60 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
         return [DiffChunk(index=1, total=1, files=[], patch_chars=0)]
 
     files = order_files_by_similarity(files)
-    chunks: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    current_chars = 0
-
-    for file_info in files:
-        patch_chars = _file_patch_chars(file_info)
-        file_limit_hit = max_files > 0 and len(current) >= max_files
-        char_limit_hit = max_chars > 0 and current and current_chars + patch_chars > max_chars
-        if file_limit_hit or char_limit_hit:
-            chunks.append(current)
-            current = []
-            current_chars = 0
-
-        current.append(file_info)
-        current_chars += patch_chars
-
-        if max_chars > 0 and patch_chars > max_chars:
-            chunks.append(current)
-            current = []
-            current_chars = 0
-
-    if current:
-        chunks.append(current)
+    chunk_count = _target_chunk_count(files, max_files=max_files, max_chars=max_chars)
+    chunks = _split_files_by_balanced_chars(files, chunk_count)
 
     total = len(chunks)
     return [
         DiffChunk(index=index + 1, total=total, files=chunk_files, patch_chars=sum(_file_patch_chars(item) for item in chunk_files))
         for index, chunk_files in enumerate(chunks)
     ]
+
+
+def _target_chunk_count(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: int = 0) -> int:
+    file_count = len(files)
+    total_chars = sum(_file_patch_chars(file_info) for file_info in files)
+    by_files = (file_count + max_files - 1) // max_files if max_files > 0 else 1
+    by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
+    return max(1, min(file_count, max(by_files, by_chars)))
+
+
+def _split_files_by_balanced_chars(files: list[dict[str, Any]], chunk_count: int) -> list[list[dict[str, Any]]]:
+    if chunk_count <= 1:
+        return [files]
+
+    chunks: list[list[dict[str, Any]]] = []
+    remaining_files = files
+    remaining_chars = sum(_file_patch_chars(file_info) for file_info in remaining_files)
+    remaining_chunks = chunk_count
+
+    while remaining_chunks > 1:
+        target_chars = remaining_chars / remaining_chunks
+        split_index = _best_split_index(remaining_files, target_chars)
+        chunk_files = remaining_files[:split_index]
+        chunks.append(chunk_files)
+        remaining_files = remaining_files[split_index:]
+        remaining_chars -= sum(_file_patch_chars(file_info) for file_info in chunk_files)
+        remaining_chunks -= 1
+
+    chunks.append(remaining_files)
+    return chunks
+
+
+def _best_split_index(files: list[dict[str, Any]], target_chars: float) -> int:
+    max_index = len(files) - 1
+    best_index = 1
+    best_distance = float("inf")
+    running_chars = 0
+
+    for index in range(1, max_index + 1):
+        running_chars += _file_patch_chars(files[index - 1])
+        distance = abs(running_chars - target_chars)
+        if distance < best_distance:
+            best_index = index
+            best_distance = distance
+
+    return best_index
 
 
 def order_files_by_similarity(files: list[dict[str, Any]]) -> list[dict[str, Any]]:

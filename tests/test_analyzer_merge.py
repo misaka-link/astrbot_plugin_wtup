@@ -9,11 +9,13 @@ from wtup.analyzer import (
     ChunkAnalysis,
     analyze_chunks,
     build_chunk_refinement_payload,
+    estimate_chunk_input_tokens,
     llm_failure_reason,
     merge_chunk_analyses,
     refine_chunk_analyses,
     refine_merged_analysis,
     safe_normalize_analysis,
+    split_chunks_by_token_limit,
     split_chunk_for_retry,
 )
 from wtup.config import PluginConfig, load_config
@@ -109,12 +111,32 @@ class ConfigTest(unittest.TestCase):
     def test_second_pass_config_defaults_to_disabled(self) -> None:
         settings = load_config({})
 
-        self.assertFalse(settings.enable_second_pass_analysis)
+        self.assertFalse(settings.enable_summary_model)
 
     def test_second_pass_config_accepts_bool_like_values(self) -> None:
+        settings = load_config({"enable_summary_model": "开启"})
+
+        self.assertTrue(settings.enable_summary_model)
+
+    def test_legacy_second_pass_config_still_works(self) -> None:
         settings = load_config({"enable_second_pass_analysis": "开启"})
 
-        self.assertTrue(settings.enable_second_pass_analysis)
+        self.assertTrue(settings.enable_summary_model)
+
+    def test_summary_provider_defaults_to_analysis_provider(self) -> None:
+        settings = load_config({"provider_id": "main-model"})
+
+        self.assertEqual(settings.effective_summary_provider_id, "main-model")
+
+    def test_token_limit_unit_uses_k_or_m(self) -> None:
+        self.assertEqual(load_config({"max_input_tokens": 32, "max_input_token_unit": "K"}).max_input_token_limit, 32000)
+        self.assertEqual(load_config({"max_input_tokens": 1, "max_input_token_unit": "M"}).max_input_token_limit, 1000000)
+
+    def test_legacy_char_limit_is_converted_to_k_tokens(self) -> None:
+        settings = load_config({"max_patch_chars": 8000})
+
+        self.assertEqual(settings.max_input_tokens, 8)
+        self.assertEqual(settings.max_input_token_limit, 8000)
 
     def test_model_concurrency_defaults_to_one(self) -> None:
         settings = load_config({})
@@ -131,24 +153,36 @@ class FakeContext:
     def __init__(self, response: str):
         self.response = response
         self.calls = 0
+        self.kwargs: list[dict] = []
 
     async def llm_generate(self, **kwargs):
         self.calls += 1
+        self.kwargs.append(kwargs)
         return self.response
+
+    def get_provider_by_id(self, provider_id: str):
+        return object()
 
 
 def make_settings(*, model_concurrency: int = 2) -> PluginConfig:
     return PluginConfig(
         provider_id="",
+        summary_provider_id="",
         timeout_seconds=5,
         model_concurrency=model_concurrency,
         analysis_prompt="请分析更新。",
+        summary_prompt="请总结更新。",
         enable_second_pass_analysis=True,
         target_groups=[],
+        analysis_file_groups=[],
         monitor_interval_minutes=30,
         github_token="",
         max_files_per_report=1,
-        max_patch_chars=0,
+        max_input_tokens=0,
+        max_input_token_unit="K",
+        max_retry_count=2,
+        enable_push_append_text=False,
+        push_append_text_template="",
     )
 
 
@@ -183,6 +217,36 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.calls, 1)
         self.assertEqual(refined["summary"], "二次整理摘要")
         self.assertEqual(refined["importance"], "高")
+        self.assertIn("请总结更新。", context.kwargs[0]["prompt"])
+
+    async def test_refine_merged_analysis_uses_summary_provider(self) -> None:
+        summary = make_summary()
+        merged = merge_chunk_analyses(summary, summary.chunks, [ChunkAnalysis(1, 3, analysis("武器调整", "第一项"))])
+        context = FakeContext(json_response(analysis("武器调整", "总结")))
+        settings = make_settings()
+        settings = PluginConfig(
+            provider_id="analysis-provider",
+            summary_provider_id="summary-provider",
+            timeout_seconds=settings.timeout_seconds,
+            model_concurrency=settings.model_concurrency,
+            analysis_prompt=settings.analysis_prompt,
+            summary_prompt=settings.summary_prompt,
+            enable_second_pass_analysis=True,
+            target_groups=[],
+            analysis_file_groups=[],
+            monitor_interval_minutes=settings.monitor_interval_minutes,
+            github_token="",
+            max_files_per_report=1,
+            max_input_tokens=0,
+            max_input_token_unit="K",
+            max_retry_count=2,
+            enable_push_append_text=False,
+            push_append_text_template="",
+        )
+
+        await refine_merged_analysis(context, settings, summary, merged)
+
+        self.assertEqual(context.kwargs[0]["chat_provider_id"], "summary-provider")
 
     async def test_refine_merged_analysis_falls_back_to_merged_result_on_invalid_json(self) -> None:
         summary = make_summary()
@@ -249,7 +313,7 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(context.calls, 1)
-        self.assertIn("程序合并和二次分析均失败", refined["summary"])
+        self.assertIn("程序合并和总结模型分析均失败", refined["summary"])
 
     def test_chunk_refinement_payload_contains_raw_json_context(self) -> None:
         summary = make_summary()
@@ -272,11 +336,13 @@ class SequenceContext:
         self.delay = delay
         self.calls = 0
         self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
         self.active = 0
         self.max_active = 0
 
     async def llm_generate(self, **kwargs):
         self.calls += 1
+        self.kwargs.append(kwargs)
         self.prompts.append(str(kwargs.get("prompt") or ""))
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -307,6 +373,48 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([result.chunk_index for result in results], [1, 2, 3])
         self.assertEqual(context.max_active, 2)
+
+    async def test_analyze_chunks_uses_analysis_provider(self) -> None:
+        summary = make_summary()
+        context = SequenceContext([json_response(analysis("武器调整", "第一项"))])
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = PluginConfig(
+            provider_id="analysis-provider",
+            summary_provider_id="summary-provider",
+            timeout_seconds=5,
+            model_concurrency=1,
+            analysis_prompt="请分析更新。",
+            summary_prompt="请总结更新。",
+            enable_second_pass_analysis=True,
+            target_groups=[],
+            analysis_file_groups=[],
+            monitor_interval_minutes=30,
+            github_token="",
+            max_files_per_report=1,
+            max_input_tokens=0,
+            max_input_token_unit="K",
+            max_retry_count=2,
+            enable_push_append_text=False,
+            push_append_text_template="",
+        )
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+
+        await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(context.prompts[0].find("请分析更新。") >= 0, True)
+        self.assertEqual(context.kwargs[0]["chat_provider_id"], "analysis-provider")
 
     async def test_invalid_json_triggers_repair_request(self) -> None:
         summary = make_summary()
@@ -360,6 +468,43 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
         self.assertEqual(items, ["前半", "后半"])
 
+    async def test_llm_failure_respects_configured_retry_count(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+            {"filename": "c.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+c"},
+            {"filename": "d.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+d"},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://example.invalid/compare",
+            total_commits=1,
+            total_files=len(files),
+            additions=4,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=8)],
+        )
+        context = SequenceContext(
+            [
+                empty_choice_response("model_context_window_exceeded"),
+                empty_choice_response("model_context_window_exceeded"),
+                json_response(analysis("武器调整", "B")),
+                json_response(analysis("武器调整", "A")),
+                json_response(analysis("经济调整", "后半")),
+            ]
+        )
+        settings = make_settings()
+
+        results = await analyze_chunks(context, settings, summary)
+
+        self.assertEqual(context.calls, 5)
+        items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
+        self.assertEqual(items, ["A", "B", "后半"])
+
 
 class AnalyzerUtilityTest(unittest.TestCase):
     def test_llm_failure_reason_detects_empty_context_window_output(self) -> None:
@@ -380,8 +525,65 @@ class AnalyzerUtilityTest(unittest.TestCase):
             {"filename": "units/tank_2.blkx", "patch": "+c"},
         ]
         chunks = split_files(files, max_files=2)
+        ordered_filenames = [file["filename"] for chunk in chunks for file in chunk.files]
 
-        self.assertEqual([file["filename"] for file in chunks[0].files], ["units/tank_1.blkx", "units/tank_2.blkx"])
+        self.assertEqual(ordered_filenames, ["units/tank_1.blkx", "units/tank_2.blkx", "weapons/gun.blkx"])
+
+    def test_split_files_uses_file_count_for_quantity_then_balances_chars(self) -> None:
+        files = [
+            {"filename": "a", "patch": "a" * 100},
+            {"filename": "b", "patch": "b" * 100},
+            {"filename": "c", "patch": "c"},
+            {"filename": "d", "patch": "d"},
+            {"filename": "e", "patch": "e"},
+            {"filename": "f", "patch": "f"},
+        ]
+        chunks = split_files(files, max_files=3)
+
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual([file["filename"] for file in chunks[0].files], ["a"])
+        self.assertEqual([file["filename"] for file in chunks[1].files], ["b", "c", "d", "e", "f"])
+        self.assertLess(abs(chunks[0].patch_chars - chunks[1].patch_chars), 20)
+
+    def test_split_files_uses_char_limit_for_quantity_without_splitting_files(self) -> None:
+        files = [
+            {"filename": "a", "patch": "a" * 50},
+            {"filename": "b", "patch": "b" * 50},
+            {"filename": "c", "patch": "c" * 50},
+            {"filename": "d", "patch": "d" * 50},
+        ]
+        chunks = split_files(files, max_chars=80)
+        chunk_filenames = [[file["filename"] for file in chunk.files] for chunk in chunks]
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(chunk_filenames, [["a"], ["b"], ["c", "d"]])
+
+    def test_split_chunks_by_token_limit_preserves_file_integrity(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+" + "a" * 200},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+" + "b" * 200},
+            {"filename": "c.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+" + "c" * 200},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=len(files),
+            additions=3,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=600)],
+        )
+        settings = load_config({"analysis_prompt": "短", "max_input_tokens": 1, "max_input_token_unit": "K"})
+        split_summary = split_chunks_by_token_limit(settings, summary)
+        filenames = [file["filename"] for chunk in split_summary.chunks for file in chunk.files]
+
+        self.assertEqual(filenames, ["a.blkx", "b.blkx", "c.blkx"])
+        self.assertTrue(all(len(chunk.files) >= 1 for chunk in split_summary.chunks))
+        self.assertGreater(sum(estimate_chunk_input_tokens(settings, split_summary, chunk) for chunk in split_summary.chunks), 0)
 
 
 def json_response(payload: dict) -> str:

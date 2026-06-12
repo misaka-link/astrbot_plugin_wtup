@@ -26,9 +26,17 @@ class ChunkAnalysis:
     raw_text: str = ""
 
 
+def _analysis_prompt_text(settings: PluginConfig) -> str:
+    return str(settings.analysis_prompt or "").strip()
+
+
+def _summary_prompt_text(settings: PluginConfig) -> str:
+    return str(settings.effective_summary_prompt or "").strip()
+
+
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
     return f"""
-{settings.analysis_prompt}
+{_analysis_prompt_text(settings)}
 
 你正在分析固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新。
 
@@ -91,7 +99,7 @@ JSON 字段如下：
 def build_json_repair_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk, raw_text: str) -> str:
     files = "\n".join(f"- {file_info.get('filename') or ''}" for file_info in chunk.files)
     return f"""
-{settings.analysis_prompt}
+{_analysis_prompt_text(settings)}
 
 上一次模型分析返回的内容不是有效 JSON。请基于“上次模型原始输出”和“当前分片文件列表”重新整理为严格 JSON。
 
@@ -150,7 +158,7 @@ JSON 字段如下：
 def build_refinement_prompt(settings: PluginConfig, summary: DiffSummary, merged_analysis: dict[str, Any]) -> str:
     merged_json = json.dumps(normalize_analysis(merged_analysis), ensure_ascii=False, indent=2)
     return f"""
-{settings.analysis_prompt}
+{_summary_prompt_text(settings)}
 
 你正在整理固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新最终报告。
 
@@ -226,7 +234,7 @@ def build_chunk_refinement_prompt(
         indent=2,
     )
     return f"""
-{settings.analysis_prompt}
+{_summary_prompt_text(settings)}
 
 你正在整理固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新最终报告。
 
@@ -321,25 +329,108 @@ def json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
+def estimate_input_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    ascii_chars = sum(1 for char in raw if ord(char) < 128)
+    non_ascii_chars = len(raw) - ascii_chars
+    return max(1, (ascii_chars + 3) // 4 + non_ascii_chars)
+
+
+def estimate_chunk_input_tokens(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> int:
+    return estimate_input_tokens(build_prompt(settings, summary, chunk))
+
+
+def split_chunks_by_token_limit(settings: PluginConfig, summary: DiffSummary) -> DiffSummary:
+    limit = int(getattr(settings, "max_input_token_limit", 0) or 0)
+    if limit <= 0:
+        return summary
+
+    split_groups: list[list[dict[str, Any]]] = []
+    for chunk in summary.chunks:
+        split_groups.extend(_split_file_group_by_token_limit(settings, summary, chunk.files, limit))
+
+    if len(split_groups) == len(summary.chunks) and all(
+        group == chunk.files for group, chunk in zip(split_groups, summary.chunks)
+    ):
+        return summary
+
+    total = len(split_groups) or 1
+    chunks = [
+        DiffChunk(index=index + 1, total=total, files=files, patch_chars=sum(file_patch_chars(item) for item in files))
+        for index, files in enumerate(split_groups or [[]])
+    ]
+    return DiffSummary(
+        base_sha=summary.base_sha,
+        head_sha=summary.head_sha,
+        compare_url=summary.compare_url,
+        total_commits=summary.total_commits,
+        total_files=summary.total_files,
+        additions=summary.additions,
+        deletions=summary.deletions,
+        changed_files=summary.changed_files,
+        commits=summary.commits,
+        files=summary.files,
+        chunks=chunks,
+    )
+
+
+def _split_file_group_by_token_limit(
+    settings: PluginConfig,
+    summary: DiffSummary,
+    files: list[dict[str, Any]],
+    limit: int,
+) -> list[list[dict[str, Any]]]:
+    if len(files) <= 1:
+        if files:
+            single = DiffChunk(index=1, total=1, files=files, patch_chars=sum(file_patch_chars(item) for item in files))
+            tokens = estimate_chunk_input_tokens(settings, summary, single)
+            if tokens > limit:
+                logger.warning(
+                    "[%s] 单文件模型输入约 %d token，超过限制 %d token；为保证文件完整性不拆分: %s",
+                    PLUGIN_NAME,
+                    tokens,
+                    limit,
+                    files[0].get("filename") or "",
+                )
+        return [files]
+
+    probe = DiffChunk(index=1, total=1, files=files, patch_chars=sum(file_patch_chars(item) for item in files))
+    if estimate_chunk_input_tokens(settings, summary, probe) <= limit:
+        return [files]
+
+    midpoint = (len(files) + 1) // 2
+    return [
+        *_split_file_group_by_token_limit(settings, summary, files[:midpoint], limit),
+        *_split_file_group_by_token_limit(settings, summary, files[midpoint:], limit),
+    ]
+
+
+def file_patch_chars(file_info: dict[str, Any]) -> int:
+    return len(str(file_info.get("patch") or "")) + len(str(file_info.get("filename") or ""))
+
+
 async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
     response = await request_llm(context, settings, prompt)
     text = extract_response_text(response)
     return safe_normalize_analysis(text)
 
 
-async def request_llm(context: Any, settings: PluginConfig, prompt: str) -> Any:
+async def request_llm(context: Any, settings: PluginConfig, prompt: str, *, provider_id: str | None = None) -> Any:
     llm_kwargs: dict[str, Any] = {"prompt": prompt}
+    requested_provider_id = settings.provider_id if provider_id is None else str(provider_id or "").strip()
 
-    if settings.provider_id:
+    if requested_provider_id:
         try:
-            provider = context.get_provider_by_id(provider_id=settings.provider_id)
+            provider = context.get_provider_by_id(provider_id=requested_provider_id)
         except Exception as exc:
             provider = None
-            logger.warning("[%s] 获取 Provider %s 失败: %s", PLUGIN_NAME, settings.provider_id, exc)
+            logger.warning("[%s] 获取 Provider %s 失败: %s", PLUGIN_NAME, requested_provider_id, exc)
         if provider:
-            llm_kwargs["chat_provider_id"] = settings.provider_id
+            llm_kwargs["chat_provider_id"] = requested_provider_id
         else:
-            logger.warning("[%s] Provider %s 不存在，改用默认模型", PLUGIN_NAME, settings.provider_id)
+            logger.warning("[%s] Provider %s 不存在，改用默认模型", PLUGIN_NAME, requested_provider_id)
 
     return await asyncio.wait_for(context.llm_generate(**llm_kwargs), timeout=settings.timeout_seconds)
 
@@ -360,14 +451,14 @@ async def refine_merged_analysis(
 ) -> dict[str, Any]:
     prompt = build_refinement_prompt(settings, summary, merged_analysis)
     try:
-        response = await request_llm(context, settings, prompt)
+        response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)
         if parsed is None:
-            raise ValueError("二次分析模型输出不是有效 JSON")
+            raise ValueError("总结模型输出不是有效 JSON")
         return parsed
     except Exception as exc:
-        logger.warning("[%s] 二次分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
+        logger.warning("[%s] 总结模型分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
         return normalize_analysis(merged_analysis)
 
 
@@ -389,11 +480,32 @@ async def analyze_chunk_with_retry(
     chunk: DiffChunk,
     semaphore: asyncio.Semaphore,
 ) -> ChunkAnalysis:
+    return await analyze_chunk_with_retry_attempt(context, settings, summary, chunk, semaphore, attempt=0)
+
+
+async def analyze_chunk_with_retry_attempt(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    semaphore: asyncio.Semaphore,
+    *,
+    attempt: int,
+) -> ChunkAnalysis:
     try:
         return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
     except Exception as exc:
-        if len(chunk.files) <= 1:
-            logger.warning("[%s] 模型分析失败 chunk %d/%d，无法继续拆分: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+        max_retry_count = max(0, int(getattr(settings, "max_retry_count", 2) or 0))
+        if len(chunk.files) <= 1 or attempt >= max_retry_count:
+            logger.warning(
+                "[%s] 模型分析失败 chunk %d/%d，已重试 %d/%d，无法继续拆分: %s",
+                PLUGIN_NAME,
+                chunk.index,
+                chunk.total,
+                attempt,
+                max_retry_count,
+                exc,
+            )
             return ChunkAnalysis(
                 chunk.index,
                 chunk.total,
@@ -403,16 +515,25 @@ async def analyze_chunk_with_retry(
 
         retry_chunks = split_chunk_for_retry(chunk)
         logger.warning(
-            "[%s] 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试一次: %s",
+            "[%s] 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试 (第 %d/%d 次): %s",
             PLUGIN_NAME,
             chunk.index,
             chunk.total,
             len(retry_chunks),
+            attempt + 1,
+            max_retry_count,
             exc,
         )
         retry_results = await asyncio.gather(
             *[
-                analyze_chunk_without_retry(context, settings, summary, retry_chunk, semaphore)
+                analyze_chunk_with_retry_attempt(
+                    context,
+                    settings,
+                    summary,
+                    retry_chunk,
+                    semaphore,
+                    attempt=attempt + 1,
+                )
                 for retry_chunk in retry_chunks
             ]
         )
@@ -480,7 +601,7 @@ async def parse_or_repair_analysis(
     if parsed is not None:
         return parsed
 
-    logger.warning("[%s] 模型输出 JSON 解析失败，启动二次模型分析 chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+    logger.warning("[%s] 模型输出 JSON 解析失败，启动 JSON 修复模型请求 chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
     repair_prompt = build_json_repair_prompt(settings, summary, chunk, raw_text)
     try:
         if semaphore is None:
@@ -493,12 +614,12 @@ async def parse_or_repair_analysis(
         repaired = parse_analysis_json(repair_text)
         if repaired is not None:
             return repaired
-        logger.warning("[%s] 二次模型分析仍未返回有效 JSON chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+        logger.warning("[%s] JSON 修复模型请求仍未返回有效 JSON chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
     except Exception as exc:
-        logger.warning("[%s] 二次模型分析失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
+        logger.warning("[%s] JSON 修复模型请求失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
 
     return fallback_analysis(
-        "模型输出格式未按 JSON 返回，二次模型分析仍失败，相关内容需要结合 GitHub 原始 diff 复核。",
+        "模型输出格式未按 JSON 返回，JSON 修复模型请求仍失败，相关内容需要结合 GitHub 原始 diff 复核。",
         raw_text=raw_text,
     )
 
@@ -524,15 +645,15 @@ async def refine_chunk_analyses(
 ) -> dict[str, Any]:
     prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
     try:
-        response = await request_llm(context, settings, prompt)
+        response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)
         if parsed is None:
-            raise ValueError("二次分析模型输出不是有效 JSON")
+            raise ValueError("总结模型输出不是有效 JSON")
         return parsed
     except Exception as exc:
-        logger.warning("[%s] 分片二次分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
-        return fallback_analysis("模型分片分析已完成，但程序合并和二次分析均失败，需要结合 GitHub 原始 diff 复核。")
+        logger.warning("[%s] 分片总结模型分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
+        return fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。")
 
 
 def safe_normalize_analysis(text: str) -> dict[str, Any]:

@@ -64,9 +64,9 @@ class GitHubClient:
 
     def _request_json(self, path: str) -> dict[str, Any]:
         url = f"{GITHUB_API_BASE}{path}"
-        _logger.info("[%s] API 请求: %s", PLUGIN_NAME, path)
+        _logger.warning("[%s] API 请求: %s", PLUGIN_NAME, path)
         result = self._request_json_with_retry(url, self._api_headers())
-        _logger.info("[%s] API 请求完成: %s", PLUGIN_NAME, path)
+        _logger.warning("[%s] API 请求完成: %s", PLUGIN_NAME, path)
         return result
 
     def _request_json_with_retry(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
