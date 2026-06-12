@@ -67,8 +67,13 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
         return [DiffChunk(index=1, total=1, files=[], patch_chars=0)]
 
     files = order_files_by_similarity(files)
-    chunk_count = _target_chunk_count(files, max_files=max_files, max_chars=max_chars)
-    chunks = _split_files_by_balanced_chars(files, chunk_count)
+    chunks = _split_files_by_file_limit(files, max_files)
+    if max_chars > 0:
+        chunks = [
+            chunk
+            for file_group in chunks
+            for chunk in _split_files_by_char_limit(file_group, max_chars)
+        ]
 
     total = len(chunks)
     return [
@@ -77,12 +82,22 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
     ]
 
 
-def _target_chunk_count(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: int = 0) -> int:
+def _split_files_by_file_limit(files: list[dict[str, Any]], max_files: int = 0) -> list[list[dict[str, Any]]]:
+    if max_files <= 0:
+        return [files]
+    return [files[index : index + max_files] for index in range(0, len(files), max_files)]
+
+
+def _split_files_by_char_limit(files: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
+    chunk_count = _target_chunk_count(files, max_chars=max_chars)
+    return _split_files_by_balanced_chars(files, chunk_count)
+
+
+def _target_chunk_count(files: list[dict[str, Any]], *, max_chars: int = 0) -> int:
     file_count = len(files)
     total_chars = sum(_file_patch_chars(file_info) for file_info in files)
-    by_files = (file_count + max_files - 1) // max_files if max_files > 0 else 1
     by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
-    return max(1, min(file_count, max(by_files, by_chars)))
+    return max(1, min(file_count, by_chars))
 
 
 def _split_files_by_balanced_chars(files: list[dict[str, Any]], chunk_count: int) -> list[list[dict[str, Any]]]:

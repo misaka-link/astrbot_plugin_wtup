@@ -5,6 +5,7 @@ import json
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from wtup.analyzer import (
     ChunkAnalysis,
@@ -571,7 +572,7 @@ class AnalyzerUtilityTest(unittest.TestCase):
 
         self.assertEqual(ordered_filenames, ["units/tank_1.blkx", "units/tank_2.blkx", "weapons/gun.blkx"])
 
-    def test_split_files_uses_file_count_for_quantity_then_balances_chars(self) -> None:
+    def test_split_files_applies_file_count_as_hard_limit(self) -> None:
         files = [
             {"filename": "a", "patch": "a" * 100},
             {"filename": "b", "patch": "b" * 100},
@@ -583,9 +584,11 @@ class AnalyzerUtilityTest(unittest.TestCase):
         chunks = split_files(files, max_files=3)
 
         self.assertEqual(len(chunks), 2)
-        self.assertEqual([file["filename"] for file in chunks[0].files], ["a"])
-        self.assertEqual([file["filename"] for file in chunks[1].files], ["b", "c", "d", "e", "f"])
-        self.assertLess(abs(chunks[0].patch_chars - chunks[1].patch_chars), 20)
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in chunks],
+            [["a", "b", "c"], ["d", "e", "f"]],
+        )
+        self.assertTrue(all(len(chunk.files) <= 3 for chunk in chunks))
 
     def test_split_files_uses_char_limit_for_quantity_without_splitting_files(self) -> None:
         files = [
@@ -626,6 +629,45 @@ class AnalyzerUtilityTest(unittest.TestCase):
         self.assertEqual(filenames, ["a.blkx", "b.blkx", "c.blkx"])
         self.assertTrue(all(len(chunk.files) >= 1 for chunk in split_summary.chunks))
         self.assertGreater(sum(estimate_chunk_input_tokens(settings, split_summary, chunk) for chunk in split_summary.chunks), 0)
+
+    def test_token_limit_splits_after_file_count_limit(self) -> None:
+        files = [
+            {"filename": "a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+            {"filename": "c.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+c"},
+            {"filename": "d.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+d"},
+        ]
+        base_chunks = split_files(files, max_files=3)
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=len(files),
+            additions=4,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=base_chunks,
+        )
+        settings = SimpleNamespace(max_input_token_limit=250)
+
+        with patch(
+            "wtup.analysis.tokens.estimate_chunk_input_tokens",
+            side_effect=lambda _settings, _summary, chunk: len(chunk.files) * 100,
+        ):
+            split_summary = split_chunks_by_token_limit(settings, summary)
+
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in base_chunks],
+            [["a.blkx", "b.blkx", "c.blkx"], ["d.blkx"]],
+        )
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in split_summary.chunks],
+            [["a.blkx", "b.blkx"], ["c.blkx"], ["d.blkx"]],
+        )
+        self.assertTrue(all(len(chunk.files) <= 3 for chunk in split_summary.chunks))
 
 
 def json_response(payload: dict) -> str:
