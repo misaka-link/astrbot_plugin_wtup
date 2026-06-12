@@ -4,6 +4,7 @@ import asyncio
 import json
 import unittest
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -155,6 +156,30 @@ class ConfigTest(unittest.TestCase):
         settings = load_config({"provider_id": "main-model"})
 
         self.assertEqual(settings.effective_summary_provider_id, "main-model")
+
+    def test_backup_provider_ids_are_loaded_and_deduplicated(self) -> None:
+        settings = load_config(
+            {
+                "provider_id": "main-model",
+                "backup_provider_id_1": " backup-model ",
+                "backup_provider_id_2": "backup-model",
+            }
+        )
+
+        self.assertEqual(settings.backup_provider_ids, ["backup-model"])
+        self.assertEqual(settings.analysis_provider_ids, ["main-model", "backup-model"])
+        self.assertEqual(settings.provider_fallback_ids("summary-model"), ["summary-model", "backup-model"])
+
+    def test_backup_provider_config_items_are_third_and_fourth(self) -> None:
+        schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(list(schema.keys())[:4], [
+            "provider_id",
+            "summary_provider_id",
+            "backup_provider_id_1",
+            "backup_provider_id_2",
+        ])
 
     def test_token_limit_unit_uses_k_or_m(self) -> None:
         self.assertEqual(load_config({"max_input_tokens": 32, "max_input_token_unit": "K"}).max_input_token_limit, 32000)
@@ -458,6 +483,45 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.prompts[0].find("请分析更新。") >= 0, True)
         self.assertEqual(context.kwargs[0]["chat_provider_id"], "analysis-provider")
+
+    async def test_analyze_chunks_falls_back_to_backup_provider_on_request_error(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        context = SequenceContext(
+            [
+                RuntimeError("primary provider failed"),
+                json_response(analysis("武器调整", "备用模型结果")),
+            ]
+        )
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = load_config(
+            {
+                "provider_id": "primary-provider",
+                "backup_provider_id_1": "backup-provider",
+                "max_retry_count": 0,
+            }
+        )
+
+        results = await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(context.calls, 2)
+        self.assertEqual(
+            [kwargs["chat_provider_id"] for kwargs in context.kwargs],
+            ["primary-provider", "backup-provider"],
+        )
+        self.assertEqual(results[0].analysis["summary"], "备用模型结果")
 
     async def test_invalid_json_triggers_repair_request(self) -> None:
         summary = make_summary()

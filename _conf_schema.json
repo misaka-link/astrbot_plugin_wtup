@@ -13,6 +13,20 @@
     "hint": "用于总计全部的大模型分析内容。留空时使用分析模型；分析模型也留空时使用 AstrBot 当前默认模型。",
     "default": ""
   },
+  "backup_provider_id_1": {
+    "type": "string",
+    "description": "备用模型 Provider ID 1",
+    "_special": "select_provider",
+    "hint": "主模型请求失败时按顺序尝试的备用模型。留空表示不启用。",
+    "default": ""
+  },
+  "backup_provider_id_2": {
+    "type": "string",
+    "description": "备用模型 Provider ID 2",
+    "_special": "select_provider",
+    "hint": "备用模型 1 也失败时继续尝试。留空表示不启用。",
+    "default": ""
+  },
   "timeout_seconds": {
     "type": "int",
     "description": "大模型分析最大超时时间",

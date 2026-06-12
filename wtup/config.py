@@ -58,6 +58,7 @@ class PluginConfig:
     enable_pre_summary_report: bool = False
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
+    backup_provider_ids: list[str] = field(default_factory=list)
     model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
         default=None,
         compare=False,
@@ -86,6 +87,14 @@ class PluginConfig:
     @property
     def effective_summary_prompt(self) -> str:
         return self.summary_prompt or self.analysis_prompt
+
+    @property
+    def analysis_provider_ids(self) -> list[str]:
+        return unique_provider_ids([self.provider_id, *self.backup_provider_ids])
+
+    def provider_fallback_ids(self, provider_id: str | None = None) -> list[str]:
+        primary_provider_id = self.provider_id if provider_id is None else str(provider_id or "").strip()
+        return unique_provider_ids([primary_provider_id, *self.backup_provider_ids])
 
 
 def config_get(config: Any, key: str, default: Any = None) -> Any:
@@ -157,6 +166,18 @@ def split_lines(value: Any) -> list[str]:
     return [str(item).strip() for item in candidates if str(item or "").strip()]
 
 
+def unique_provider_ids(provider_ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for provider_id in provider_ids:
+        text = str(provider_id or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def load_config(config: Any) -> PluginConfig:
     max_input_raw = config_get(config, "max_input_tokens", None)
     max_input_tokens = as_decimal(max_input_raw, 0, minimum=Decimal("0"))
@@ -195,5 +216,11 @@ def load_config(config: Any) -> PluginConfig:
         push_append_text_template=str(
             config_get(config, "push_append_text_template", DEFAULT_PUSH_APPEND_TEXT_TEMPLATE)
             or DEFAULT_PUSH_APPEND_TEXT_TEMPLATE
+        ),
+        backup_provider_ids=unique_provider_ids(
+            [
+                str(config_get(config, "backup_provider_id_1", "") or "").strip(),
+                str(config_get(config, "backup_provider_id_2", "") or "").strip(),
+            ]
         ),
     )

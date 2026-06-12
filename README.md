@@ -38,6 +38,8 @@ mode: commit
 
 - `provider_id`：分析模型 Provider ID，留空使用默认模型。
 - `summary_provider_id`：总结模型 Provider ID，留空使用分析模型；分析模型也留空时使用默认模型。
+- `backup_provider_id_1`：备用模型 Provider ID 1，主模型请求失败时优先尝试。
+- `backup_provider_id_2`：备用模型 Provider ID 2，备用模型 1 也失败时继续尝试。
 - `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
@@ -109,7 +111,9 @@ https://github.com/settings/tokens
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
 
-如果某个模型请求失败，例如模型上下文超限、接口报错、超时或返回空内容，插件会把这个失败分片的文件数量减半后重试。`max_retry_count` 控制最多重试几轮，默认 2；每一轮仍然只按文件边界拆分，并遵守 `model_concurrency` 限制。如果分片只有 1 个文件或达到最大重试次数，才会生成需复核的兜底分析。
+如果配置了 `backup_provider_id_1` 或 `backup_provider_id_2`，单次模型请求会先使用主模型；主模型请求报错或超时后，按备用模型 1、备用模型 2 的顺序重试同一份输入。备用模型同样适用于分片分析、JSON 修复和总结模型请求；如果某个备用模型配置为空或不可用，会自动跳过。
+
+如果所有可用模型仍请求失败，或模型返回空内容等不可用结果，插件会把这个失败分片的文件数量减半后重试。`max_retry_count` 控制最多重试几轮，默认 2；每一轮仍然只按文件边界拆分，并遵守 `model_concurrency` 限制。如果分片只有 1 个文件或达到最大重试次数，才会生成需复核的兜底分析。
 
 如果模型返回内容不是有效 JSON，插件会强制再发起一次模型请求，要求模型基于原始输出修复为严格 JSON。这个 JSON 修复请求不受“是否启动总结模型”开关影响；如果修复仍失败，才会生成需复核的兜底分析。
 

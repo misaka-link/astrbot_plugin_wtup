@@ -160,6 +160,7 @@ class WTUpdatePlugin(Star):
             f"单次模型请求 token 输入限制: {self.settings.max_input_token_limit or '不限制'}",
             f"模型请求并发数: {self.settings.model_concurrency}",
             f"总结模型: {'启动' if self.settings.enable_summary_model else '关闭'}",
+            f"备用模型: {len(self.settings.backup_provider_ids)} 个",
             f"分析前报告: {'生成' if self.settings.enable_pre_summary_report else '关闭'}",
             f"最大重试次数: {self.settings.max_retry_count}",
             f"文件保留数量: {self.settings.max_saved_artifacts or '不限制'}",
