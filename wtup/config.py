@@ -59,6 +59,7 @@ class PluginConfig:
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
     backup_provider_ids: list[str] = field(default_factory=list)
+    admin_targets: list[str] = field(default_factory=list)
     model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
         default=None,
         compare=False,
@@ -200,6 +201,7 @@ def load_config(config: Any) -> PluginConfig:
         enable_pre_summary_report=as_bool(config_get(config, "enable_pre_summary_report", False)),
         footer_note=str(config_get(config, "footer_note", DEFAULT_FOOTER_NOTE) or DEFAULT_FOOTER_NOTE),
         target_groups=split_lines(config_get(config, "target_groups", "")),
+        admin_targets=split_lines(config_get(config, "admin_targets", "")),
         analysis_file_groups=split_lines(config_get(config, "analysis_file_groups", "")),
         monitor_interval_minutes=as_int(
             config_get(config, "monitor_interval_minutes", DEFAULT_INTERVAL_MINUTES),

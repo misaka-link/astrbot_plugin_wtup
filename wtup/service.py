@@ -26,7 +26,7 @@ from .analyzer import (
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import DiffChunk, build_diff_summary, short_sha
 from .github_client import GitHubClient, GitHubRequestError
-from .notifier import push_log_file, push_report, push_text
+from .notifier import push_admin_notification, push_log_file, push_report, push_text
 from .renderer import build_report_html, render_plain_text, render_report_image
 from .runtime import RuntimeState, ceil_minutes, warning_log
 from .state_store import StateStore
@@ -50,6 +50,47 @@ def normalize_targets(targets: list[str] | None) -> list[str]:
     if not targets:
         return []
     return [str(target).strip() for target in targets if str(target or "").strip()]
+
+
+def analysis_needs_review(analysis: dict[str, Any]) -> bool:
+    tags = analysis.get("tags") if isinstance(analysis.get("tags"), list) else []
+    if any(str(tag).strip() == "需复核" for tag in tags):
+        return True
+    summary = str(analysis.get("summary") or "")
+    recommendation = str(analysis.get("recommendation") or "")
+    return "需要结合 GitHub 原始 diff 复核" in f"{summary}\n{recommendation}"
+
+
+def chunk_failure_reasons(results: list[ChunkAnalysis]) -> list[str]:
+    reasons: list[str] = []
+    for result in results:
+        error = str(result.error or "").strip()
+        if error:
+            reasons.append(f"分片 {result.chunk_index}/{result.chunk_total}: {error}")
+        elif analysis_needs_review(result.analysis):
+            reason = str(result.analysis.get("summary") or "分片分析结果需要复核").strip()
+            reasons.append(f"分片 {result.chunk_index}/{result.chunk_total}: {reason}")
+    return reasons
+
+
+def build_admin_failure_notice(
+    *,
+    summary: Any,
+    analysis_failure_reasons: list[str],
+    log_path: Path,
+) -> str:
+    reason_lines = "\n".join(f"- {reason}" for reason in analysis_failure_reasons[:8])
+    if not reason_lines:
+        reason_lines = "- 模型分析失败，未生成可推送报告。"
+    return (
+        "WT 更新分析失败，已跳过群推送。\n"
+        f"仓库: {REPO_FULL_NAME}\n"
+        f"提交范围: {short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}\n"
+        f"文件数: {summary.total_files}\n"
+        "失败原因:\n"
+        f"{reason_lines}\n"
+        f"日志: {log_path}"
+    )
 
 
 class UpdateCheckService:
@@ -179,10 +220,13 @@ class UpdateCheckService:
             failed_count = 0
             report_sent_count = 0
             report_failed_count = 0
+            admin_sent_count = 0
+            admin_failed_count = 0
 
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
             token_usage = sum_token_usage(result.token_usage for result in chunk_results)
+            analysis_failure_reasons = chunk_failure_reasons(chunk_results)
             pre_summary_token_usage = token_usage
             summary_model_enabled = self.settings.enable_summary_model
             merged_analysis: dict[str, Any] | None = None
@@ -200,6 +244,7 @@ class UpdateCheckService:
                     token_usage += summary_usage
             except Exception as exc:
                 logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
+                analysis_failure_reasons.append(f"合并分片分析结果失败: {exc}")
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
                     analysis, summary_usage = await refine_chunk_analyses_with_usage(
@@ -213,6 +258,9 @@ class UpdateCheckService:
                     token_usage += summary_usage
                 else:
                     analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
+            if analysis_needs_review(analysis) and not analysis_failure_reasons:
+                analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
+            analysis_failed = bool(analysis_failure_reasons)
             logger.warning(
                 "[%s] 模型真实 token 消耗: total=%d, prompt=%d, completion=%d",
                 PLUGIN_NAME,
@@ -290,7 +338,34 @@ class UpdateCheckService:
                     )
                 append_text = final_report.append_text
 
-            if send_to_groups and push_targets:
+            if analysis_failed:
+                notice_text = build_admin_failure_notice(
+                    summary=summary,
+                    analysis_failure_reasons=analysis_failure_reasons,
+                    log_path=log_path,
+                )
+                if self.settings.admin_targets:
+                    logger.warning(
+                        "[%s] 分析失败，跳过群推送，私发通知 %d 个管理员...",
+                        PLUGIN_NAME,
+                        len(self.settings.admin_targets),
+                    )
+                    admin_sent_count, admin_failed_count = await push_admin_notification(
+                        self.context,
+                        self.settings.admin_targets,
+                        text=notice_text,
+                        event=event,
+                    )
+                    logger.warning(
+                        "[%s] 管理员通知完成: 成功 %d，失败 %d",
+                        PLUGIN_NAME,
+                        admin_sent_count,
+                        admin_failed_count,
+                    )
+                else:
+                    logger.warning("[%s] 分析失败，已跳过群推送，但未配置管理员列表，无法私发通知", PLUGIN_NAME)
+
+            if not analysis_failed and send_to_groups and push_targets:
                 logger.warning(
                     "[%s] 推送 %d 份报告到 %d 个群聊...",
                     PLUGIN_NAME,
@@ -333,7 +408,7 @@ class UpdateCheckService:
                             text_failed,
                         )
 
-            if send_to_groups and file_targets:
+            if not analysis_failed and send_to_groups and file_targets:
                 logger.warning(
                     "[%s] 推送 %d 份分析日志文件到 %d 个群聊...",
                     PLUGIN_NAME,
@@ -380,6 +455,13 @@ class UpdateCheckService:
             should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and report_sent_count > 0)
             if should_mark_seen:
                 self.runtime.save_seen_commit(latest.sha)
+            elif analysis_failed:
+                logger.warning(
+                    "[%s] 本次分析失败，保留 commit 进度在 %s，下次循环继续重试 %s",
+                    PLUGIN_NAME,
+                    short_sha(previous_sha),
+                    short_sha(latest.sha),
+                )
             elif send_to_groups and push_targets:
                 logger.warning(
                     "[%s] 本次报告未成功发送到任何目标，保留 commit 进度在 %s，下次循环继续重试 %s",
@@ -394,8 +476,15 @@ class UpdateCheckService:
                 f"并发 {self.settings.model_concurrency}，已生成 {len(report_artifacts)} 份报告。"
             )
             if send_to_groups:
-                message += f" 推送成功 {sent_count}，失败 {failed_count}。"
-                if push_targets and report_sent_count <= 0:
+                if analysis_failed:
+                    message += (
+                        f" 分析失败，已跳过群推送，管理员通知成功 {admin_sent_count}，失败 {admin_failed_count}。"
+                    )
+                    if not self.settings.admin_targets:
+                        message += " 未配置管理员列表。"
+                else:
+                    message += f" 推送成功 {sent_count}，失败 {failed_count}。"
+                if not analysis_failed and push_targets and report_sent_count <= 0:
                     message += " 报告未成功发出，未标记本次更新完成，下次循环会继续重试。"
             warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
             result = {
@@ -403,6 +492,9 @@ class UpdateCheckService:
                 "image_path": image_path,
                 "log_path": log_path,
                 "append_text": append_text,
+                "analysis_failed": analysis_failed,
+                "admin_sent_count": admin_sent_count,
+                "admin_failed_count": admin_failed_count,
                 "commit_marked_complete": should_mark_seen,
                 "report_sent_count": report_sent_count,
                 "report_failed_count": report_failed_count,

@@ -156,6 +156,7 @@ class WTUpdatePlugin(Star):
             f"上次检查: {last_checked_text}",
             f"检查间隔: {self.settings.monitor_interval_minutes} 分钟",
             f"推送目标: {len(self.settings.target_groups)} 个",
+            f"管理员通知目标: {len(self.settings.admin_targets)} 个",
             f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
             f"单次模型请求 token 输入限制: {self.settings.max_input_token_limit or '不限制'}",
             f"模型请求并发数: {self.settings.model_concurrency}",
@@ -219,6 +220,8 @@ class WTUpdatePlugin(Star):
             return
 
         await self._react_to_command_done(event)
+        if result.get("analysis_failed") and _get_event_group_id(event):
+            return
         if not send_to_groups:
             reports = result.get("reports") if isinstance(result.get("reports"), list) else []
             if reports:

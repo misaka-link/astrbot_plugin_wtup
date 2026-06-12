@@ -43,6 +43,7 @@ mode: commit
 - `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
+- `admin_targets`：管理员列表。分析失败时会私发通知这些管理员，每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
@@ -114,6 +115,8 @@ https://github.com/settings/tokens
 如果配置了 `backup_provider_id_1` 或 `backup_provider_id_2`，单次模型请求会先使用主模型；主模型请求报错或超时后，按备用模型 1、备用模型 2 的顺序重试同一份输入。备用模型同样适用于分片分析、JSON 修复和总结模型请求；如果某个备用模型配置为空或不可用，会自动跳过。
 
 如果所有可用模型仍请求失败，或模型返回空内容等不可用结果，插件会把这个失败分片的文件数量减半后重试。`max_retry_count` 控制最多重试几轮，默认 2；每一轮仍然只按文件边界拆分，并遵守 `model_concurrency` 限制。如果分片只有 1 个文件或达到最大重试次数，才会生成需复核的兜底分析。
+
+如果本次分析最终失败或进入需复核兜底报告，插件不会向 `target_groups` 发送报告、追加文字或向 `analysis_file_groups` 上传日志，改为私发通知 `admin_targets`。未配置管理员列表时只记录日志。该情况下不会把本次 commit 标记为完成，下次循环会继续重试。
 
 如果模型返回内容不是有效 JSON，插件会强制再发起一次模型请求，要求模型基于原始输出修复为严格 JSON。这个 JSON 修复请求不受“是否启动总结模型”开关影响；如果修复仍失败，才会生成需复核的兜底分析。
 

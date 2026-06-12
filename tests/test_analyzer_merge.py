@@ -170,6 +170,13 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.analysis_provider_ids, ["main-model", "backup-model"])
         self.assertEqual(settings.provider_fallback_ids("summary-model"), ["summary-model", "backup-model"])
 
+    def test_admin_targets_are_loaded_from_list_or_lines(self) -> None:
+        list_settings = load_config({"admin_targets": ["123", "platform:private:user"]})
+        line_settings = load_config({"admin_targets": "123\nplatform:private:user"})
+
+        self.assertEqual(list_settings.admin_targets, ["123", "platform:private:user"])
+        self.assertEqual(line_settings.admin_targets, ["123", "platform:private:user"])
+
     def test_backup_provider_config_items_are_third_and_fourth(self) -> None:
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))

@@ -205,6 +205,28 @@ async def _send_group_text_by_id(
     raise RuntimeError("未找到可用的 OneBot call_action 客户端")
 
 
+async def _send_private_text_by_id(
+    context: Any,
+    user_id: str,
+    *,
+    text: str,
+    extra_call_targets: list[Any] | None,
+) -> None:
+    message = _build_text_message(text)
+    errors: list[str] = []
+
+    for call_target in await _iter_call_targets(context, extra_call_targets):
+        try:
+            await _call_action(call_target, "send_private_msg", user_id=int(user_id), message=message)
+            return
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError("未找到可用的 OneBot call_action 客户端")
+
+
 async def _upload_group_file_by_id(
     context: Any,
     group_id: str,
@@ -301,6 +323,39 @@ async def push_text(
         except Exception as exc:
             failed += 1
             logger.warning("[%s] 推送文字到 %s 失败: %s", PLUGIN_NAME, target, exc)
+    return success, failed
+
+
+async def push_admin_notification(
+    context: Any,
+    targets: list[str],
+    *,
+    text: str,
+    event: Any | None = None,
+) -> tuple[int, int]:
+    success = 0
+    failed = 0
+    extra_call_targets = await _collect_event_call_targets(event) if event is not None else None
+    for target in targets:
+        target = str(target).strip()
+        if not target:
+            continue
+        try:
+            if _is_group_id(target):
+                await _send_private_text_by_id(
+                    context,
+                    target,
+                    text=text,
+                    extra_call_targets=extra_call_targets,
+                )
+            else:
+                if MessageChain is None:
+                    raise RuntimeError("AstrBot MessageChain is unavailable")
+                await context.send_message(target, MessageChain().message(text))
+            success += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("[%s] 私发管理员通知到 %s 失败: %s", PLUGIN_NAME, target, exc)
     return success, failed
 
 
