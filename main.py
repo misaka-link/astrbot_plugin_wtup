@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,51 @@ def _event_is_admin(event: AstrMessageEvent) -> bool:
     except Exception as exc:
         logger.warning("[%s] 检查管理员权限失败: %s", PLUGIN_NAME, exc)
         return False
+
+
+def _normalize_group_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text.isdigit() else ""
+
+
+def _get_event_group_id(event: AstrMessageEvent) -> str:
+    for method_name in ("get_group_id",):
+        method = getattr(event, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            group_id = _normalize_group_id(method())
+        except Exception as exc:
+            logger.warning("[%s] 获取当前群号失败: %s", PLUGIN_NAME, exc)
+            group_id = ""
+        if group_id:
+            return group_id
+
+    message_obj = getattr(event, "message_obj", None)
+    candidates = [
+        getattr(event, "group_id", None),
+        getattr(event, "group", None),
+        getattr(message_obj, "group_id", None),
+        getattr(message_obj, "group", None),
+    ]
+    for candidate in candidates:
+        group_id = _normalize_group_id(candidate)
+        if group_id:
+            return group_id
+
+    raw_message = getattr(message_obj, "raw_message", None)
+    if isinstance(raw_message, dict):
+        for key in ("group_id", "group", "gid"):
+            group_id = _normalize_group_id(raw_message.get(key))
+            if group_id:
+                return group_id
+
+    origin = str(getattr(event, "unified_msg_origin", "") or "")
+    if "group" in origin.lower():
+        match = re.search(r"(\d+)(?!.*\d)", origin)
+        if match:
+            return match.group(1)
+    return ""
 
 
 @register(PLUGIN_NAME, "御坂_20001", "War Thunder Datamine 更新监控插件", PLUGIN_VERSION)
@@ -142,20 +188,61 @@ class WTUpdatePlugin(Star):
         args_lower = args.lower()
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
         force_latest = force_all or "强制" in args or "force" in args_lower
+        force_current_group = force_latest and not force_all
         if force_all and not _event_is_admin(event):
             yield event.plain_result("权限不足：/wtup_check 强制全部 只能由 AstrBot 管理员执行。")
             return
+        target_groups = None
+        analysis_file_groups = None
+        send_to_groups = force_all
+        if force_current_group:
+            current_group_id = _get_event_group_id(event)
+            if not current_group_id:
+                yield event.plain_result("当前会话不是可识别的群聊，无法把强制分析报告上传到当前群。")
+                return
+            target_groups = [current_group_id]
+            analysis_file_groups = [current_group_id]
+            send_to_groups = True
         try:
-            result = await self.check_once(manual=True, force_latest=force_latest, send_to_groups=force_all, event=event)
+            result = await self.check_once(
+                manual=True,
+                force_latest=force_latest,
+                send_to_groups=send_to_groups,
+                event=event,
+                target_groups=target_groups,
+                analysis_file_groups=analysis_file_groups,
+            )
         except Exception as exc:
             logger.warning("[%s] 手动检查失败: %s", PLUGIN_NAME, exc, exc_info=True)
             yield event.plain_result(f"检查失败：{exc}")
             return
 
         await self._react_to_command_done(event)
-        if result.get("image_path") and not force_all:
-            yield event.image_result(str(result["image_path"]))
-            return
+        if not send_to_groups:
+            reports = result.get("reports") if isinstance(result.get("reports"), list) else []
+            if reports:
+                for report in reports:
+                    if not isinstance(report, dict):
+                        continue
+                    image_path = report.get("image_path")
+                    if image_path:
+                        yield event.image_result(str(image_path))
+                    else:
+                        yield event.plain_result(str(report.get("fallback_text") or ""))
+                append_text = str(result.get("append_text") or "").strip()
+                if append_text:
+                    yield event.plain_result(append_text)
+                return
+            if result.get("image_path"):
+                yield event.image_result(str(result["image_path"]))
+                append_text = str(result.get("append_text") or "").strip()
+                if append_text:
+                    yield event.plain_result(append_text)
+                return
+            append_text = str(result.get("append_text") or "").strip()
+            if append_text:
+                yield event.plain_result(append_text)
+                return
         yield event.plain_result(str(result.get("message") or "检查完成。"))
 
     async def _react_to_command(self, event: AstrMessageEvent, emoji_id: str, *, set_reaction: bool = True) -> bool:
@@ -209,12 +296,16 @@ class WTUpdatePlugin(Star):
         force_latest: bool,
         send_to_groups: bool,
         event: AstrMessageEvent | None = None,
+        target_groups: list[str] | None = None,
+        analysis_file_groups: list[str] | None = None,
     ) -> dict[str, Any]:
         return await self.service.check_once(
             manual=manual,
             force_latest=force_latest,
             send_to_groups=send_to_groups,
             event=event,
+            target_groups=target_groups,
+            analysis_file_groups=analysis_file_groups,
         )
 
     def _resolve_data_dir(self) -> Path:

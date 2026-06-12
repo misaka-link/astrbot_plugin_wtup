@@ -89,13 +89,13 @@ https://github.com/settings/tokens
 /wtup_check 强制
 ```
 
-强制分析最新一个 commit，用于测试图片渲染和模型分析，只回复当前会话，不群发。
+强制分析最新一个 commit，用于测试图片渲染和模型分析。命令会直接发送到当前触发命令的群，不使用后台配置的 `target_groups` 和 `analysis_file_groups` 列表；如果无法识别当前群号，会提示失败。开启 `enable_pre_summary_report` 且总结模型启用时，当前群会依次收到分析前和分析后的两份报告，并上传两份 `.log` 分析日志；开启 `enable_push_append_text` 时，报告图片后会追加文字内容。
 
 ```text
 /wtup_check 强制全部
 ```
 
-强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`。仅 AstrBot 管理员可执行。
+强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`；如果配置了 `analysis_file_groups`，也会向这些群上传分析日志。仅 AstrBot 管理员可执行。
 
 ## 模型请求拆分规则
 
@@ -117,7 +117,7 @@ https://github.com/settings/tokens
 
 开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次总结模型整理最终报告。总结模型只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果总结模型失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
 
-`enable_pre_summary_report` 默认关闭。开启后且 `enable_summary_model` 也开启时，插件会保留总结模型处理前的程序合并报告，并在总结模型处理后再生成最终报告。两份报告都会渲染图片、保存日志；如果配置了群推送，会依次发送两张报告图；如果配置了 `analysis_file_groups`，也会上传两份 `.log` 文件。两份报告的图片和文本里会标注“总分析模型分析前 / 总分析模型分析后”，日志文件名会追加 `_总分析前` 和 `_总分析后`，避免同一版本范围互相覆盖。
+`enable_pre_summary_report` 默认关闭。开启后且 `enable_summary_model` 也开启时，插件会保留总结模型处理前的程序合并报告，并在总结模型处理后再生成最终报告。两份报告都会渲染图片、保存日志；`/wtup_check 强制` 会依次把两份报告和两份日志文件发送到当前群；如果配置了群推送，会依次发送两张报告图；如果配置了 `analysis_file_groups`，也会上传两份 `.log` 文件。两份报告的图片和文本里会标注“总分析模型分析前 / 总分析模型分析后”，日志文件名会追加 `_总分析前` 和 `_总分析后`，避免同一版本范围互相覆盖。
 
 如果开启了总结模型，但程序初步合并分片结果时发生异常，插件不会直接中断。本次检查会把各分片的分析 JSON、分片错误信息和原始模型输出文本交给总结模型生成最终报告；如果这一步仍然失败，才会生成需复核的兜底报告。
 
@@ -129,7 +129,7 @@ https://github.com/settings/tokens
 
 ## 推送附加内容
 
-开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息。默认模板示例：
+开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息；使用 `/wtup_check 强制` 时，这条文字会发送到当前群。默认模板示例：
 
 ```text
 {version_range} 分析完成
@@ -141,7 +141,7 @@ https://github.com/settings/tokens
 
 `{token_count}` 表示本次实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
 
-配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
+配置 `analysis_file_groups` 后，群推送流程完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
 
 ## 数据持久化
 

@@ -70,13 +70,13 @@
   "enable_pre_summary_report": {
     "type": "bool",
     "description": "是否生成分析前报告",
-    "hint": "开启后且“是否启动总结模型”也开启时，本次检查会生成两份报告：一份是总分析模型分析前的程序合并报告，一份是总分析模型分析后的最终报告。保存、群推送和分析文件发送都会发送双份。",
+    "hint": "开启后且“是否启动总结模型”也开启时，本次检查会生成两份报告：一份是总分析模型分析前的程序合并报告，一份是总分析模型分析后的最终报告。保存、/wtup_check 强制当前群发送、群推送和分析文件发送都会发送双份。",
     "default": false
   },
   "enable_push_append_text": {
     "type": "bool",
     "description": "推送时是否启动追加文字内容推送",
-    "hint": "开启后，报告图片推送完成后再发送一条文字内容。",
+    "hint": "开启后，报告图片推送完成后再发送一条文字内容；/wtup_check 强制 会发送到当前群。",
     "default": false
   },
   "push_append_text_template": {

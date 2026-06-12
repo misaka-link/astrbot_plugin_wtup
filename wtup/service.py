@@ -45,6 +45,12 @@ class ReportArtifact:
     token_usage: TokenUsage
 
 
+def normalize_targets(targets: list[str] | None) -> list[str]:
+    if not targets:
+        return []
+    return [str(target).strip() for target in targets if str(target or "").strip()]
+
+
 class UpdateCheckService:
     def __init__(
         self,
@@ -85,10 +91,18 @@ class UpdateCheckService:
         force_latest: bool,
         send_to_groups: bool,
         event: Any | None = None,
+        target_groups: list[str] | None = None,
+        analysis_file_groups: list[str] | None = None,
     ) -> dict[str, Any]:
         async with self._check_lock:
             started_at = time.monotonic()
             warning_log("[%s] 开始执行检查%s", PLUGIN_NAME, "（手动）" if manual else "（定时）")
+            push_targets = normalize_targets(target_groups) if target_groups is not None else list(self.settings.target_groups)
+            file_targets = (
+                normalize_targets(analysis_file_groups)
+                if analysis_file_groups is not None
+                else list(self.settings.analysis_file_groups)
+            )
 
             client = GitHubClient(token=self.settings.github_token)
             logger.warning("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
@@ -121,7 +135,7 @@ class UpdateCheckService:
             if force_latest and latest.parents:
                 previous_sha = latest.parents[0]
 
-            if send_to_groups and not self.settings.target_groups:
+            if send_to_groups and not push_targets:
                 return {"message": "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"}
 
             logger.warning("[%s] 步骤 2/5: 对比 commits (%s...%s)...", PLUGIN_NAME, short_sha(previous_sha), short_sha(latest.sha))
@@ -263,18 +277,26 @@ class UpdateCheckService:
             fallback_text = final_report.fallback_text
             log_path = final_report.log_path
             elapsed_minutes = ceil_minutes(time.monotonic() - started_at)
+            append_text = ""
+            if self.settings.enable_push_append_text:
+                append_text = self.runtime.build_push_append_text(
+                    analysis=analysis,
+                    token_count=token_count,
+                    elapsed_minutes=elapsed_minutes,
+                    summary_model_enabled=summary_model_enabled,
+                )
 
-            if send_to_groups and self.settings.target_groups:
+            if send_to_groups and push_targets:
                 logger.warning(
                     "[%s] 推送 %d 份报告到 %d 个群聊...",
                     PLUGIN_NAME,
                     len(report_artifacts),
-                    len(self.settings.target_groups),
+                    len(push_targets),
                 )
                 for report in report_artifacts:
                     ok, failed = await push_report(
                         self.context,
-                        self.settings.target_groups,
+                        push_targets,
                         image_path=report.image_path,
                         fallback_text=report.fallback_text,
                         event=event,
@@ -288,16 +310,10 @@ class UpdateCheckService:
                         ok,
                         failed,
                     )
-                if self.settings.enable_push_append_text:
-                    append_text = self.runtime.build_push_append_text(
-                        analysis=analysis,
-                        token_count=token_count,
-                        elapsed_minutes=elapsed_minutes,
-                        summary_model_enabled=summary_model_enabled,
-                    )
+                if append_text:
                     text_ok, text_failed = await push_text(
                         self.context,
-                        self.settings.target_groups,
+                        push_targets,
                         text=append_text,
                         event=event,
                     )
@@ -305,17 +321,17 @@ class UpdateCheckService:
                     failed_count += text_failed
                     logger.warning("[%s] 追加文字推送完成: 成功 %d，失败 %d", PLUGIN_NAME, text_ok, text_failed)
 
-            if send_to_groups and self.settings.analysis_file_groups:
+            if send_to_groups and file_targets:
                 logger.warning(
                     "[%s] 推送 %d 份分析日志文件到 %d 个群聊...",
                     PLUGIN_NAME,
                     len(report_artifacts),
-                    len(self.settings.analysis_file_groups),
+                    len(file_targets),
                 )
                 for report in report_artifacts:
                     file_ok, file_failed = await push_log_file(
                         self.context,
-                        self.settings.analysis_file_groups,
+                        file_targets,
                         log_path=report.log_path,
                         event=event,
                     )
@@ -342,7 +358,8 @@ class UpdateCheckService:
                     for report in report_artifacts
                 ],
                 manual=manual,
-                sent_to_groups=bool(send_to_groups and self.settings.target_groups),
+                sent_to_groups=bool(send_to_groups and push_targets),
+                target_groups=push_targets,
                 sent_count=sent_count,
                 failed_count=failed_count,
                 token_usage=token_usage,
@@ -359,6 +376,23 @@ class UpdateCheckService:
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"
             warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
+            result = {
+                "message": message,
+                "image_path": image_path,
+                "log_path": log_path,
+                "append_text": append_text,
+                "reports": [
+                    {
+                        "key": report.key,
+                        "display_name": report.display_name,
+                        "image_path": report.image_path,
+                        "log_path": report.log_path,
+                        "fallback_text": report.fallback_text,
+                    }
+                    for report in report_artifacts
+                ],
+            }
             if image_path:
-                return {"message": message, "image_path": image_path}
-            return {"message": fallback_text or message}
+                return result
+            result["message"] = fallback_text or message
+            return result
