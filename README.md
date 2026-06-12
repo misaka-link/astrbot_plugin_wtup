@@ -43,7 +43,7 @@ mode: commit
 - `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
-- `admin_targets`：管理员列表。分析失败时会私发通知这些管理员，每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
+- `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制` 和 `/wtup_check 强制全部`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词。
@@ -94,11 +94,13 @@ https://github.com/settings/tokens
 
 强制分析最新一个 commit，用于测试图片渲染和模型分析。命令会直接发送到当前触发命令的群，不使用后台配置的 `target_groups` 和 `analysis_file_groups` 列表；如果无法识别当前群号，会提示失败。开启 `enable_pre_summary_report` 且总结模型启用时，当前群会依次收到分析前和分析后的两份报告，并上传两份 `.log` 分析日志；开启 `enable_push_append_text` 时，每份报告图片后都会追加对应文字内容。
 
+仅插件后台 `admin_targets` 管理员列表中的用户可执行。
+
 ```text
 /wtup_check 强制全部
 ```
 
-强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`；如果配置了 `analysis_file_groups`，也会向这些群上传分析日志。仅 AstrBot 管理员可执行。
+强制分析最新一个 commit，并推送到后台配置的全部 `target_groups`；如果配置了 `analysis_file_groups`，也会向这些群上传分析日志。仅插件后台 `admin_targets` 管理员列表中的用户可执行。
 
 ## 模型请求拆分规则
 

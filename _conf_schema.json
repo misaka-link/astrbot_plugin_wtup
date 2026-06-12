@@ -51,7 +51,7 @@
   "admin_targets": {
     "type": "list",
     "description": "管理员列表",
-    "hint": "分析失败时私发通知这些管理员。每项填写一个私聊 unified_msg_origin 或 QQ 号；填写纯 QQ 号时会通过 OneBot send_private_msg 发送。",
+    "hint": "仅这些管理员可执行 /wtup_check 强制 和 /wtup_check 强制全部；分析失败时也会私发通知这些管理员。每项填写一个私聊 unified_msg_origin 或 QQ 号；填写纯 QQ 号时会通过 OneBot send_private_msg 发送。",
     "default": [],
     "items": {
       "type": "string"

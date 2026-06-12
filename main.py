@@ -13,12 +13,14 @@ from astrbot.api.star import Context, Star, StarTools, register
 try:
     from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from .wtup.diff_collector import short_sha
+    from .wtup.permissions import admin_target_allows_sender, normalize_user_id
     from .wtup.runtime import RuntimeState
     from .wtup.service import UpdateCheckService
     from .wtup.state_store import StateStore
 except ImportError:
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from wtup.diff_collector import short_sha
+    from wtup.permissions import admin_target_allows_sender, normalize_user_id
     from wtup.runtime import RuntimeState
     from wtup.service import UpdateCheckService
     from wtup.state_store import StateStore
@@ -48,20 +50,74 @@ def _call_target(event: AstrMessageEvent) -> Any | None:
     return None
 
 
-def _event_is_admin(event: AstrMessageEvent) -> bool:
-    is_admin = getattr(event, "is_admin", None)
-    if not callable(is_admin):
-        return False
-    try:
-        return bool(is_admin())
-    except Exception as exc:
-        logger.warning("[%s] 检查管理员权限失败: %s", PLUGIN_NAME, exc)
-        return False
-
-
 def _normalize_group_id(value: Any) -> str:
     text = str(value or "").strip()
     return text if text.isdigit() else ""
+
+
+def _get_event_user_id(event: AstrMessageEvent) -> str:
+    for method_name in ("get_sender_id", "get_user_id"):
+        method = getattr(event, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            user_id = normalize_user_id(method())
+        except Exception as exc:
+            logger.warning("[%s] 获取发送者 QQ 失败: %s", PLUGIN_NAME, exc)
+            user_id = ""
+        if user_id:
+            return user_id
+
+    message_obj = getattr(event, "message_obj", None)
+    candidates = [
+        getattr(event, "sender_id", None),
+        getattr(event, "user_id", None),
+        getattr(message_obj, "sender_id", None),
+        getattr(message_obj, "user_id", None),
+    ]
+    for candidate in candidates:
+        user_id = normalize_user_id(candidate)
+        if user_id:
+            return user_id
+
+    for user in (
+        getattr(event, "sender", None),
+        getattr(event, "user", None),
+        getattr(message_obj, "sender", None),
+        getattr(message_obj, "user", None),
+    ):
+        if isinstance(user, dict):
+            for key in ("user_id", "id"):
+                user_id = normalize_user_id(user.get(key))
+                if user_id:
+                    return user_id
+            continue
+        for key in ("user_id", "id"):
+            user_id = normalize_user_id(getattr(user, key, None))
+            if user_id:
+                return user_id
+
+    raw_message = getattr(message_obj, "raw_message", None)
+    if isinstance(raw_message, dict):
+        for key in ("user_id", "sender_id"):
+            user_id = normalize_user_id(raw_message.get(key))
+            if user_id:
+                return user_id
+        sender = raw_message.get("sender")
+        if isinstance(sender, dict):
+            for key in ("user_id", "id"):
+                user_id = normalize_user_id(sender.get(key))
+                if user_id:
+                    return user_id
+    return ""
+
+
+def _event_is_configured_admin(event: AstrMessageEvent, admin_targets: list[str]) -> bool:
+    return admin_target_allows_sender(
+        admin_targets,
+        sender_id=_get_event_user_id(event),
+        event_origin=getattr(event, "unified_msg_origin", ""),
+    )
 
 
 def _get_event_group_id(event: AstrMessageEvent) -> str:
@@ -156,7 +212,7 @@ class WTUpdatePlugin(Star):
             f"上次检查: {last_checked_text}",
             f"检查间隔: {self.settings.monitor_interval_minutes} 分钟",
             f"推送目标: {len(self.settings.target_groups)} 个",
-            f"管理员通知目标: {len(self.settings.admin_targets)} 个",
+            f"管理员列表: {len(self.settings.admin_targets)} 个",
             f"单次模型请求文件限制: {self.settings.max_files_per_report or '不限制'}",
             f"单次模型请求 token 输入限制: {self.settings.max_input_token_limit or '不限制'}",
             f"模型请求并发数: {self.settings.model_concurrency}",
@@ -191,8 +247,8 @@ class WTUpdatePlugin(Star):
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
         force_latest = force_all or "强制" in args or "force" in args_lower
         force_current_group = force_latest and not force_all
-        if force_all and not _event_is_admin(event):
-            yield event.plain_result("权限不足：/wtup_check 强制全部 只能由 AstrBot 管理员执行。")
+        if force_latest and not _event_is_configured_admin(event, self.settings.admin_targets):
+            yield event.plain_result("权限不足：/wtup_check 强制 和 /wtup_check 强制全部 只能由插件后台“管理员列表”中的用户执行。")
             return
         target_groups = None
         analysis_file_groups = None
