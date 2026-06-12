@@ -48,7 +48,7 @@ mode: commit
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
 - `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
-- `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制。
+- `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制，支持最多两位小数。
 - `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`。
 - `max_retry_count`：最大重试次数，默认 2。每次重试都会把失败任务按文件边界拆成两半。
 
@@ -100,7 +100,7 @@ https://github.com/settings/tokens
 
 插件只在文件边界拆分，不会拆开单个文件 patch。由于要保证文件完整性，实际每个分片的文件数或 token 估算值可能会围绕配置值浮动；如果某个文件本身超过 `max_input_tokens`，它会完整进入某个分片，不会被截断。
 
-`max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。
+`max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
 

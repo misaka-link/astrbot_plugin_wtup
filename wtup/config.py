@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable
 
 
@@ -49,7 +50,7 @@ class PluginConfig:
     monitor_interval_minutes: int
     github_token: str
     max_files_per_report: int
-    max_input_tokens: int
+    max_input_tokens: Decimal
     max_input_token_unit: str
     max_retry_count: int
     enable_push_append_text: bool
@@ -70,7 +71,7 @@ class PluginConfig:
         if self.max_input_tokens <= 0:
             return 0
         multiplier = 1_000_000 if self.max_input_token_unit.upper() == "M" else 1_000
-        return self.max_input_tokens * multiplier
+        return int(self.max_input_tokens * multiplier)
 
     @property
     def max_patch_chars(self) -> int:
@@ -114,6 +115,17 @@ def as_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     return parsed
 
 
+def as_decimal(value: Any, default: str | int | Decimal, *, minimum: Decimal | None = None) -> Decimal:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (AttributeError, InvalidOperation, ValueError):
+        parsed = Decimal(str(default))
+    parsed = parsed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if minimum is not None and parsed < minimum:
+        return minimum
+    return parsed
+
+
 def as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -145,12 +157,12 @@ def split_lines(value: Any) -> list[str]:
 
 def load_config(config: Any) -> PluginConfig:
     max_input_raw = config_get(config, "max_input_tokens", None)
-    max_input_tokens = as_int(max_input_raw, 0, minimum=0)
+    max_input_tokens = as_decimal(max_input_raw, 0, minimum=Decimal("0"))
     max_input_token_unit = normalize_token_unit(config_get(config, "max_input_token_unit", "K"))
     if max_input_tokens <= 0:
         legacy_max_chars = as_int(config_get(config, "max_patch_chars", 0), 0, minimum=0)
         if legacy_max_chars > 0 and max_input_raw is None:
-            max_input_tokens = (legacy_max_chars + 999) // 1000
+            max_input_tokens = as_decimal(Decimal(legacy_max_chars) / Decimal(1000), 0, minimum=Decimal("0"))
             max_input_token_unit = "K"
     return PluginConfig(
         provider_id=str(config_get(config, "provider_id", "") or "").strip(),

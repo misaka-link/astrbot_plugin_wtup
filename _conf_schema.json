@@ -98,9 +98,9 @@
     "default": 0
   },
   "max_input_tokens": {
-    "type": "int",
+    "type": "float",
     "description": "每次模型请求最大 token 输入",
-    "hint": "默认 0 表示不限制。按完整模型输入估算 token；超过后会在保证文件完整性的前提下拆分任务。",
+    "hint": "默认 0 表示不限制。支持最多两位小数，例如 0.25K 或 1.5M。按完整模型输入估算 token；超过后会在保证文件完整性的前提下拆分任务。",
     "default": 0
   },
   "max_input_token_unit": {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 
 from wtup.analyzer import (
@@ -132,10 +133,25 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load_config({"max_input_tokens": 32, "max_input_token_unit": "K"}).max_input_token_limit, 32000)
         self.assertEqual(load_config({"max_input_tokens": 1, "max_input_token_unit": "M"}).max_input_token_limit, 1000000)
 
+    def test_token_limit_accepts_two_decimal_places(self) -> None:
+        k_settings = load_config({"max_input_tokens": "0.25", "max_input_token_unit": "K"})
+        m_settings = load_config({"max_input_tokens": 1.5, "max_input_token_unit": "M"})
+
+        self.assertEqual(k_settings.max_input_tokens, Decimal("0.25"))
+        self.assertEqual(k_settings.max_input_token_limit, 250)
+        self.assertEqual(m_settings.max_input_tokens, Decimal("1.50"))
+        self.assertEqual(m_settings.max_input_token_limit, 1500000)
+
+    def test_token_limit_rounds_to_two_decimal_places(self) -> None:
+        settings = load_config({"max_input_tokens": "1.235", "max_input_token_unit": "K"})
+
+        self.assertEqual(settings.max_input_tokens, Decimal("1.24"))
+        self.assertEqual(settings.max_input_token_limit, 1240)
+
     def test_legacy_char_limit_is_converted_to_k_tokens(self) -> None:
         settings = load_config({"max_patch_chars": 8000})
 
-        self.assertEqual(settings.max_input_tokens, 8)
+        self.assertEqual(settings.max_input_tokens, Decimal("8.00"))
         self.assertEqual(settings.max_input_token_limit, 8000)
 
     def test_model_concurrency_defaults_to_one(self) -> None:
