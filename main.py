@@ -221,6 +221,7 @@ class WTUpdatePlugin(Star):
         if not send_to_groups:
             reports = result.get("reports") if isinstance(result.get("reports"), list) else []
             if reports:
+                sent_report_append_text = False
                 for report in reports:
                     if not isinstance(report, dict):
                         continue
@@ -229,8 +230,12 @@ class WTUpdatePlugin(Star):
                         yield event.image_result(str(image_path))
                     else:
                         yield event.plain_result(str(report.get("fallback_text") or ""))
+                    report_append_text = str(report.get("append_text") or "").strip()
+                    if report_append_text:
+                        sent_report_append_text = True
+                        yield event.plain_result(report_append_text)
                 append_text = str(result.get("append_text") or "").strip()
-                if append_text:
+                if append_text and not sent_report_append_text:
                     yield event.plain_result(append_text)
                 return
             if result.get("image_path"):

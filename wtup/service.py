@@ -43,6 +43,7 @@ class ReportArtifact:
     image_path: Path | None
     log_path: Path
     token_usage: TokenUsage
+    append_text: str = ""
 
 
 def normalize_targets(targets: list[str] | None) -> list[str]:
@@ -210,7 +211,6 @@ class UpdateCheckService:
                     token_usage += summary_usage
                 else:
                     analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
-            token_count = token_usage.total_tokens
             logger.warning(
                 "[%s] 模型真实 token 消耗: total=%d, prompt=%d, completion=%d",
                 PLUGIN_NAME,
@@ -279,12 +279,14 @@ class UpdateCheckService:
             elapsed_minutes = ceil_minutes(time.monotonic() - started_at)
             append_text = ""
             if self.settings.enable_push_append_text:
-                append_text = self.runtime.build_push_append_text(
-                    analysis=analysis,
-                    token_count=token_count,
-                    elapsed_minutes=elapsed_minutes,
-                    summary_model_enabled=summary_model_enabled,
-                )
+                for report in report_artifacts:
+                    report.append_text = self.runtime.build_push_append_text(
+                        analysis=report.analysis,
+                        token_count=report.token_usage.total_tokens,
+                        elapsed_minutes=elapsed_minutes,
+                        summary_model_enabled=summary_model_enabled and report.key == "final",
+                    )
+                append_text = final_report.append_text
 
             if send_to_groups and push_targets:
                 logger.warning(
@@ -310,16 +312,22 @@ class UpdateCheckService:
                         ok,
                         failed,
                     )
-                if append_text:
-                    text_ok, text_failed = await push_text(
-                        self.context,
-                        push_targets,
-                        text=append_text,
-                        event=event,
-                    )
-                    sent_count += text_ok
-                    failed_count += text_failed
-                    logger.warning("[%s] 追加文字推送完成: 成功 %d，失败 %d", PLUGIN_NAME, text_ok, text_failed)
+                    if report.append_text:
+                        text_ok, text_failed = await push_text(
+                            self.context,
+                            push_targets,
+                            text=report.append_text,
+                            event=event,
+                        )
+                        sent_count += text_ok
+                        failed_count += text_failed
+                        logger.warning(
+                            "[%s] %s追加文字推送完成: 成功 %d，失败 %d",
+                            PLUGIN_NAME,
+                            report.display_name or "合并报告",
+                            text_ok,
+                            text_failed,
+                        )
 
             if send_to_groups and file_targets:
                 logger.warning(
@@ -388,6 +396,7 @@ class UpdateCheckService:
                         "image_path": report.image_path,
                         "log_path": report.log_path,
                         "fallback_text": report.fallback_text,
+                        "append_text": report.append_text,
                     }
                     for report in report_artifacts
                 ],

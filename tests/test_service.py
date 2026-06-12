@@ -165,8 +165,12 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "target_groups": ["123"],
                         "analysis_file_groups": ["123"],
+                        "provider_id": "NewAPI-OpenAI/glm-5.1",
+                        "summary_provider_id": "NewApi-OpenAI/gemini-3.5-flash-preview",
                         "enable_summary_model": True,
                         "enable_pre_summary_report": True,
+                        "enable_push_append_text": True,
+                        "push_append_text_template": "消耗token:{token_count}\n分析模型:{analysis_model_name}\n总结模型:{summary_model_name}",
                     }
                 ),
                 state_store=state_store,
@@ -226,6 +230,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
+                patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))) as push_text,
                 patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))) as push_log_file,
             ):
                 client = client_class.return_value
@@ -244,6 +249,18 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("分析前摘要", pushed_texts[0])
             self.assertIn("【总分析模型分析后】", pushed_texts[1])
             self.assertIn("分析后摘要", pushed_texts[1])
+            self.assertEqual(push_text.await_count, 2)
+            append_texts = [call.kwargs["text"] for call in push_text.await_args_list]
+            self.assertEqual(
+                append_texts,
+                [
+                    "消耗token:150\n分析模型:glm-5.1\n总结模型:未启动",
+                    "消耗token:200\n分析模型:glm-5.1\n总结模型:gemini-3.5-flash-preview",
+                ],
+            )
+            self.assertEqual(result["reports"][0]["append_text"], append_texts[0])
+            self.assertEqual(result["reports"][1]["append_text"], append_texts[1])
+            self.assertEqual(result["append_text"], append_texts[1])
             self.assertEqual(push_log_file.await_count, 2)
             log_names = [call.kwargs["log_path"].name for call in push_log_file.await_args_list]
             self.assertEqual(
