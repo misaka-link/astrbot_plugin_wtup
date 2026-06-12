@@ -28,7 +28,7 @@ from .diff_collector import DiffChunk, build_diff_summary, short_sha
 from .github_client import GitHubClient, GitHubRequestError
 from .notifier import push_admin_notification, push_log_file, push_report, push_text
 from .renderer import build_report_html, render_plain_text, render_report_image
-from .runtime import RuntimeState, ceil_minutes, warning_log
+from .runtime import RuntimeState, ceil_minutes, format_elapsed_duration, warning_log
 from .state_store import StateStore
 from .analysis import TokenUsage
 
@@ -326,7 +326,9 @@ class UpdateCheckService:
             image_path = final_report.image_path
             fallback_text = final_report.fallback_text
             log_path = final_report.log_path
-            elapsed_minutes = ceil_minutes(time.monotonic() - started_at)
+            elapsed_seconds = time.monotonic() - started_at
+            elapsed_minutes = ceil_minutes(elapsed_seconds)
+            elapsed_duration = format_elapsed_duration(elapsed_seconds)
             append_text = ""
             if self.settings.enable_push_append_text:
                 for report in report_artifacts:
@@ -334,6 +336,7 @@ class UpdateCheckService:
                         analysis=report.analysis,
                         token_count=report.token_usage.total_tokens,
                         elapsed_minutes=elapsed_minutes,
+                        elapsed_duration=elapsed_duration,
                         summary_model_enabled=summary_model_enabled and report.key == "final",
                     )
                 append_text = final_report.append_text

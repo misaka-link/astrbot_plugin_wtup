@@ -30,7 +30,7 @@ DEFAULT_SUMMARY_PROMPT = (
 DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
     "{version_range} 分析完成\n"
     "消耗token:{token_count}\n"
-    "耗时{elapsed_minutes}分钟\n"
+    "耗时{elapsed_duration}\n"
     "分析模型:{analysis_model}\n"
     "总结模型:{summary_model}"
 )

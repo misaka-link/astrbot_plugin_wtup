@@ -52,7 +52,7 @@ mode: commit
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
 - `enable_pre_summary_report`：是否生成分析前报告，默认关闭。开启后且总结模型也开启时，会生成总分析模型分析前和分析后的两份报告。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
-- `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`*_model_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
+- `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`，`*_model_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
 - `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
@@ -146,12 +146,12 @@ https://github.com/settings/tokens
 ```text
 {version_range} 分析完成
 消耗token:{token_count}
-耗时{elapsed_minutes}分钟
+耗时{elapsed_duration}
 分析模型:{analysis_model}
 总结模型:{summary_model}
 ```
 
-`{token_count}` 表示对应报告实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。启用双报告时，分析前追加文字使用总结模型调用前的累计 token，且总结模型显示为 `未启动`；分析后追加文字使用包含总结模型在内的最终累计 token。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
+`{token_count}` 表示对应报告实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。`{elapsed_duration}` 和 `{耗时}` 表示从检查开始到报告生成的耗时，直接输出 `x分x秒`；`{elapsed_minutes}` 仍可用于兼容旧模板，表示向上取整后的分钟数。启用双报告时，分析前追加文字使用总结模型调用前的累计 token，且总结模型显示为 `未启动`；分析后追加文字使用包含总结模型在内的最终累计 token。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
 
 配置 `analysis_file_groups` 后，群推送流程完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
 

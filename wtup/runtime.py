@@ -34,6 +34,12 @@ def ceil_minutes(seconds: float) -> int:
     return max(1, int((max(0.0, seconds) + 59) // 60))
 
 
+def format_elapsed_duration(seconds: float) -> str:
+    total_seconds = max(0, int(max(0.0, seconds)))
+    minutes, seconds_part = divmod(total_seconds, 60)
+    return f"{minutes}分{seconds_part}秒"
+
+
 class RuntimeState:
     def __init__(
         self,
@@ -146,6 +152,7 @@ class RuntimeState:
         analysis: dict[str, Any],
         token_count: int,
         elapsed_minutes: int,
+        elapsed_duration: str,
         summary_model_enabled: bool,
     ) -> str:
         version_range = str(analysis.get("report_title") or "").strip() or "版本->版本"
@@ -157,22 +164,25 @@ class RuntimeState:
             summary_model = "未启动"
             summary_model_name = "未启动"
         template = self.settings.push_append_text_template
+        variables = {
+            "version_range": version_range,
+            "token_count": token_count,
+            "elapsed_minutes": elapsed_minutes,
+            "elapsed_duration": elapsed_duration,
+            "耗时": elapsed_duration,
+            "analysis_model": analysis_model,
+            "summary_model": summary_model,
+            "analysis_model_name": analysis_model_name,
+            "summary_model_name": summary_model_name,
+        }
         try:
-            text = template.format(
-                version_range=version_range,
-                token_count=token_count,
-                elapsed_minutes=elapsed_minutes,
-                analysis_model=analysis_model,
-                summary_model=summary_model,
-                analysis_model_name=analysis_model_name,
-                summary_model_name=summary_model_name,
-            )
+            text = template.format_map(variables)
         except Exception as exc:
             logger.warning("[%s] 追加文字模板格式化失败，使用默认内容: %s", PLUGIN_NAME, exc)
             text = (
                 f"{version_range} 分析完成\n"
                 f"消耗token:{token_count}\n"
-                f"耗时{elapsed_minutes}分钟\n"
+                f"耗时{elapsed_duration}\n"
                 f"分析模型:{analysis_model}\n"
                 f"总结模型:{summary_model}"
             )
