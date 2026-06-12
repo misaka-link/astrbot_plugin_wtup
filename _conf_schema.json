@@ -39,6 +39,12 @@
     "hint": "允许同时进行的模型分析请求数量。默认 1 表示串行；大于 1 时会并发请求，但最终报告仍按文件分片顺序合并。",
     "default": 1
   },
+  "enable_streaming_llm_call": {
+    "type": "bool",
+    "description": "启用流式模型请求",
+    "hint": "默认关闭，使用原有非流式调用方式。开启后，插件会优先使用 AstrBot Provider 的 text_chat_stream 流式接口并聚合结果，适用于仅支持流式请求的服务。",
+    "default": false
+  },
   "target_groups": {
     "type": "list",
     "description": "推送群聊列表",

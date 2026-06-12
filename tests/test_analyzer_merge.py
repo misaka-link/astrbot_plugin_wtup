@@ -19,6 +19,7 @@ from wtup.analyzer import (
     merge_chunk_analyses,
     refine_chunk_analyses,
     refine_merged_analysis,
+    request_llm,
     safe_normalize_analysis,
     split_chunks_by_token_limit,
     split_chunk_for_retry,
@@ -223,6 +224,16 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual(settings.model_concurrency, 1)
 
+    def test_streaming_llm_call_defaults_to_disabled(self) -> None:
+        settings = load_config({})
+
+        self.assertFalse(settings.enable_streaming_llm_call)
+
+    def test_streaming_llm_call_accepts_bool_like_values(self) -> None:
+        settings = load_config({"enable_streaming_llm_call": "开启"})
+
+        self.assertTrue(settings.enable_streaming_llm_call)
+
 
 class FakeContext:
     def __init__(self, response: str):
@@ -245,6 +256,7 @@ def make_settings(*, model_concurrency: int = 2) -> PluginConfig:
         summary_provider_id="",
         timeout_seconds=5,
         model_concurrency=model_concurrency,
+        enable_streaming_llm_call=False,
         analysis_prompt="请分析更新。",
         summary_prompt="请总结更新。",
         enable_second_pass_analysis=True,
@@ -304,6 +316,7 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
             summary_provider_id="summary-provider",
             timeout_seconds=settings.timeout_seconds,
             model_concurrency=settings.model_concurrency,
+            enable_streaming_llm_call=False,
             analysis_prompt=settings.analysis_prompt,
             summary_prompt=settings.summary_prompt,
             enable_second_pass_analysis=True,
@@ -432,6 +445,30 @@ class SequenceContext:
             self.active -= 1
 
 
+class StreamProvider:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.kwargs: list[dict] = []
+
+    async def text_chat_stream(self, **kwargs):
+        self.kwargs.append(kwargs)
+        for response in self.responses:
+            await asyncio.sleep(0)
+            yield response
+
+
+class StreamContext(SequenceContext):
+    def __init__(self, provider: StreamProvider | None):
+        super().__init__([json_response(analysis("武器调整", "非流式结果"))])
+        self.provider = provider
+
+    def get_provider_by_id(self, provider_id: str):
+        return self.provider
+
+    def get_all_providers(self):
+        return [self.provider] if self.provider is not None else []
+
+
 class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_analyze_chunks_preserves_chunk_order_with_concurrency(self) -> None:
         summary = make_summary()
@@ -458,6 +495,7 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
             summary_provider_id="summary-provider",
             timeout_seconds=5,
             model_concurrency=1,
+            enable_streaming_llm_call=False,
             analysis_prompt="请分析更新。",
             summary_prompt="请总结更新。",
             enable_second_pass_analysis=True,
@@ -529,6 +567,35 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
             ["primary-provider", "backup-provider"],
         )
         self.assertEqual(results[0].analysis["summary"], "备用模型结果")
+
+    async def test_request_llm_uses_non_streaming_call_by_default(self) -> None:
+        context = SequenceContext([json_response(analysis("武器调整", "非流式结果"))])
+        context.get_provider_by_id = lambda provider_id: object()
+        settings = load_config({"provider_id": "analysis-provider"})
+
+        response = await request_llm(context, settings, "请分析")
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(context.kwargs[0]["chat_provider_id"], "analysis-provider")
+        self.assertNotIn("stream", context.kwargs[0])
+        self.assertEqual(json.loads(response)["summary"], "非流式结果")
+
+    async def test_request_llm_uses_streaming_provider_when_enabled(self) -> None:
+        provider = StreamProvider(
+            [
+                SimpleNamespace(is_chunk=True, completion_text='{"summary":"'),
+                SimpleNamespace(is_chunk=True, completion_text='流式结果"}', usage=SimpleNamespace(input=4, output=5, total=9)),
+            ]
+        )
+        context = StreamContext(provider)
+        settings = load_config({"provider_id": "analysis-provider", "enable_streaming_llm_call": True})
+
+        response = await request_llm(context, settings, "请分析")
+
+        self.assertEqual(context.calls, 0)
+        self.assertEqual(provider.kwargs[0], {"prompt": "请分析"})
+        self.assertEqual(response.completion_text, '{"summary":"流式结果"}')
+        self.assertEqual(extract_token_usage(response).total_tokens, 9)
 
     async def test_invalid_json_triggers_repair_request(self) -> None:
         summary = make_summary()

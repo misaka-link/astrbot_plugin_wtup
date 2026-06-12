@@ -42,6 +42,7 @@ class PluginConfig:
     summary_provider_id: str
     timeout_seconds: int
     model_concurrency: int
+    enable_streaming_llm_call: bool
     analysis_prompt: str
     summary_prompt: str
     enable_second_pass_analysis: bool
@@ -193,6 +194,7 @@ def load_config(config: Any) -> PluginConfig:
         summary_provider_id=str(config_get(config, "summary_provider_id", "") or "").strip(),
         timeout_seconds=as_int(config_get(config, "timeout_seconds", 120), 120, minimum=1),
         model_concurrency=as_int(config_get(config, "model_concurrency", 1), 1, minimum=1),
+        enable_streaming_llm_call=as_bool(config_get(config, "enable_streaming_llm_call", False)),
         analysis_prompt=str(config_get(config, "analysis_prompt", DEFAULT_ANALYSIS_PROMPT) or DEFAULT_ANALYSIS_PROMPT),
         summary_prompt=str(config_get(config, "summary_prompt", DEFAULT_SUMMARY_PROMPT) or DEFAULT_SUMMARY_PROMPT),
         enable_second_pass_analysis=as_bool(

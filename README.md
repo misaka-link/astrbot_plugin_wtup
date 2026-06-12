@@ -42,6 +42,7 @@ mode: commit
 - `backup_provider_id_2`：备用模型 Provider ID 2，备用模型 1 也失败时继续尝试。
 - `timeout_seconds`：单次模型请求的大模型分析超时时间，单位秒。
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
+- `enable_streaming_llm_call`：是否启用流式模型请求，默认关闭。开启后优先使用 AstrBot Provider 的 `text_chat_stream` 流式接口并聚合结果。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
 - `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制` 和 `/wtup_check 强制全部`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
@@ -113,6 +114,8 @@ https://github.com/settings/tokens
 `max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
+
+`enable_streaming_llm_call` 默认关闭，关闭时继续使用原有 `context.llm_generate` 非流式调用。开启后，插件会优先通过 AstrBot Provider 的 `text_chat_stream` 流式接口请求模型，并把流式片段聚合成完整响应再进入 JSON 解析、修复、重试和 token 统计流程。该开关适用于仅支持流式请求的服务；如果未配置 Provider ID 且无法定位可用流式 Provider，插件会记录 warning 并回退为非流式请求。
 
 如果配置了 `backup_provider_id_1` 或 `backup_provider_id_2`，单次模型请求会先使用主模型；主模型请求报错或超时后，按备用模型 1、备用模型 2 的顺序重试同一份输入。备用模型同样适用于分片分析、JSON 修复和总结模型请求；如果某个备用模型配置为空或不可用，会自动跳过。
 
