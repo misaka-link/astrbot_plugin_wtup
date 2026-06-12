@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,7 +15,8 @@ except ModuleNotFoundError:
 from ..config import PLUGIN_NAME, PluginConfig
 from .errors import record_model_error
 from .normalize import safe_normalize_analysis
-from .responses import extract_response_text
+from .responses import extract_response_text, extract_token_usage
+from .tokens import estimate_input_tokens
 
 
 async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
@@ -103,6 +105,20 @@ async def _request_llm_with_provider(
     chunk: Any | None,
 ) -> Any:
     normalized_provider_id = str(provider_id or "").strip()
+    request_no = _record_task_log(
+        settings,
+        "模型请求开始",
+        {
+            "Provider": provider_label(normalized_provider_id),
+            "Provider序号": f"{provider_index}/{provider_total}",
+            "允许备用模型": "是" if allow_fallback else "否",
+            "流式请求": "是" if settings.enable_streaming_llm_call else "否",
+            "输入token": estimate_input_tokens(prompt),
+            "分片": _chunk_label(chunk),
+            "提交范围": _summary_label(summary),
+        },
+    )
+    started_at = time.monotonic()
     if normalized_provider_id:
         try:
             provider = context.get_provider_by_id(provider_id=normalized_provider_id)
@@ -119,6 +135,16 @@ async def _request_llm_with_provider(
                 summary=summary,
                 chunk=chunk,
             )
+            _record_task_log(
+                settings,
+                "模型请求失败",
+                {
+                    "第几次模型请求": request_no,
+                    "Provider": provider_label(normalized_provider_id),
+                    "耗时秒": f"{time.monotonic() - started_at:.2f}",
+                    "错误": str(wrapped),
+                },
+            )
             raise wrapped from exc
         if not provider:
             exc = RuntimeError(f"Provider {normalized_provider_id} 不存在")
@@ -133,10 +159,36 @@ async def _request_llm_with_provider(
                 summary=summary,
                 chunk=chunk,
             )
+            _record_task_log(
+                settings,
+                "模型请求失败",
+                {
+                    "第几次模型请求": request_no,
+                    "Provider": provider_label(normalized_provider_id),
+                    "耗时秒": f"{time.monotonic() - started_at:.2f}",
+                    "错误": str(exc),
+                },
+            )
             raise exc
 
     try:
-        return await _request_llm_once(context, settings, prompt, provider_id=normalized_provider_id)
+        response = await _request_llm_once(context, settings, prompt, provider_id=normalized_provider_id)
+        usage = extract_token_usage(response)
+        response_text = extract_response_text(response)
+        _record_task_log(
+            settings,
+            "模型请求完成",
+            {
+                "第几次模型请求": request_no,
+                "Provider": provider_label(normalized_provider_id),
+                "耗时秒": f"{time.monotonic() - started_at:.2f}",
+                "响应字符数": len(response_text),
+                "返回总token": usage.total_tokens,
+                "返回输入token": usage.prompt_tokens,
+                "返回输出token": usage.completion_tokens,
+            },
+        )
+        return response
     except Exception as exc:
         _record_provider_request_error(
             settings,
@@ -148,6 +200,16 @@ async def _request_llm_with_provider(
             allow_fallback=allow_fallback,
             summary=summary,
             chunk=chunk,
+        )
+        _record_task_log(
+            settings,
+            "模型请求失败",
+            {
+                "第几次模型请求": request_no,
+                "Provider": provider_label(normalized_provider_id),
+                "耗时秒": f"{time.monotonic() - started_at:.2f}",
+                "错误": str(exc),
+            },
         )
         raise
 
@@ -196,6 +258,39 @@ def request_provider_ids(settings: PluginConfig, provider_id: str | None = None)
 
 def provider_label(provider_id: str | None) -> str:
     return str(provider_id or "").strip() or "默认模型"
+
+
+def _record_task_log(settings: PluginConfig, event: str, metadata: dict[str, Any]) -> int | None:
+    recorder = getattr(settings, "task_log_recorder", None)
+    if not callable(recorder):
+        return None
+    try:
+        return recorder(event, metadata)
+    except Exception as exc:
+        logger.warning("[%s] 写入任务日志失败: %s", PLUGIN_NAME, exc)
+        return None
+
+
+def _summary_label(summary: Any | None) -> str:
+    if summary is None:
+        return ""
+    base_sha = str(getattr(summary, "base_sha", "") or "")
+    head_sha = str(getattr(summary, "head_sha", "") or "")
+    if base_sha or head_sha:
+        return f"{base_sha[:7] or 'unknown'}...{head_sha[:7] or 'unknown'}"
+    return ""
+
+
+def _chunk_label(chunk: Any | None) -> str:
+    if chunk is None:
+        return ""
+    index = getattr(chunk, "index", None)
+    total = getattr(chunk, "total", None)
+    files = getattr(chunk, "files", None)
+    file_count = len(files) if isinstance(files, list) else 0
+    if index is None or total is None:
+        return f"{file_count} 个文件"
+    return f"{index}/{total}，{file_count} 个文件"
 
 
 async def _request_llm_once(

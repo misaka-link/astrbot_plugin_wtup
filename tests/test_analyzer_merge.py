@@ -471,6 +471,23 @@ class StreamContext(SequenceContext):
 
 
 class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_request_llm_records_task_log_events(self) -> None:
+        events: list[tuple[str, dict]] = []
+
+        def recorder(event: str, metadata: dict) -> int | None:
+            events.append((event, metadata))
+            return 1 if event == "模型请求开始" else None
+
+        context = SequenceContext([json_response(analysis("武器调整", "第一项"))])
+        settings = replace(load_config({}), task_log_recorder=recorder)
+
+        await request_llm(context, settings, "请分析这个 diff")
+
+        self.assertEqual([event for event, _metadata in events], ["模型请求开始", "模型请求完成"])
+        self.assertGreater(events[0][1]["输入token"], 0)
+        self.assertNotIn("请求内容", events[0][1])
+        self.assertEqual(events[1][1]["第几次模型请求"], 1)
+
     async def test_analyze_chunks_preserves_chunk_order_with_concurrency(self) -> None:
         summary = make_summary()
         context = SequenceContext(

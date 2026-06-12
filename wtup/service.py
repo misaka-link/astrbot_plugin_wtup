@@ -104,6 +104,7 @@ class UpdateCheckService:
         log_dir: Path,
         error_dir: Path,
         template_path: Path,
+        task_log_dir: Path | None = None,
         render_host: Any | None = None,
     ) -> None:
         self.context = context
@@ -113,12 +114,14 @@ class UpdateCheckService:
         self.image_dir = image_dir
         self.log_dir = log_dir
         self.error_dir = error_dir
+        self.task_log_dir = task_log_dir if task_log_dir is not None else log_dir.parent / "task_logs"
         self.template_path = template_path
         self.runtime = RuntimeState(
             settings=settings,
             state_store=state_store,
             log_dir=log_dir,
             error_dir=error_dir,
+            task_log_dir=self.task_log_dir,
         )
         self._check_lock = asyncio.Lock()
 
@@ -138,6 +141,11 @@ class UpdateCheckService:
     ) -> dict[str, Any]:
         async with self._check_lock:
             started_at = time.monotonic()
+            task_log_path = self.runtime.start_task_log(
+                manual=manual,
+                force_latest=force_latest,
+                send_to_groups=send_to_groups,
+            )
             warning_log("[%s] 开始执行检查%s", PLUGIN_NAME, "（手动）" if manual else "（定时）")
             push_targets = normalize_targets(target_groups) if target_groups is not None else list(self.settings.target_groups)
             file_targets = (
@@ -145,13 +153,28 @@ class UpdateCheckService:
                 if analysis_file_groups is not None
                 else list(self.settings.analysis_file_groups)
             )
+            self.runtime.record_task_log(
+                "任务目标",
+                {
+                    "报告推送目标数": len(push_targets),
+                    "日志文件推送目标数": len(file_targets),
+                },
+            )
 
             client = GitHubClient(token=self.settings.github_token)
             logger.warning("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
+            self.runtime.record_task_log("步骤 1/5 开始", {"内容": "获取最新 commit"})
             latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
             logger.warning("[%s] 已完成获取最新 commit: %s", PLUGIN_NAME, short_sha(latest.sha))
+            self.runtime.record_task_log("步骤 1/5 完成", {"最新提交": short_sha(latest.sha)})
             if not latest.sha:
-                return {"message": "未获取到最新 commit。"}
+                message = "未获取到最新 commit。"
+                self.runtime.finish_task_log(
+                    status="失败",
+                    message=message,
+                    elapsed_seconds=time.monotonic() - started_at,
+                )
+                return {"message": message, "task_log_path": task_log_path}
 
             repo_state = self.state_store.get_repo_state(REPO_FULL_NAME)
             previous_sha = str(repo_state.get("last_commit_sha") or "").strip()
@@ -162,37 +185,74 @@ class UpdateCheckService:
                 else:
                     self.runtime.save_seen_commit(latest.sha)
                     logger.warning("[%s] 首次检查，已建立基线: %s", PLUGIN_NAME, short_sha(latest.sha))
-                    return {
-                        "message": (
-                            f"首次检查已建立基线：{short_sha(latest.sha)}。\n"
-                            "定时任务不会推送历史更新；如需测试最新 commit，请使用 /wtup_check 强制。"
-                        )
-                    }
+                    message = (
+                        f"首次检查已建立基线：{short_sha(latest.sha)}。\n"
+                        "定时任务不会推送历史更新；如需测试最新 commit，请使用 /wtup_check 强制。"
+                    )
+                    self.runtime.record_task_log("建立基线", {"提交": short_sha(latest.sha)})
+                    self.runtime.finish_task_log(
+                        status="跳过",
+                        message=message,
+                        elapsed_seconds=time.monotonic() - started_at,
+                    )
+                    return {"message": message, "task_log_path": task_log_path}
 
             if previous_sha == latest.sha and not force_latest:
                 self.runtime.save_seen_commit(latest.sha)
                 logger.warning("[%s] 没有新 commit，跳过", PLUGIN_NAME)
-                return {"message": f"没有新 commit，当前为 {short_sha(latest.sha)}。"}
+                message = f"没有新 commit，当前为 {short_sha(latest.sha)}。"
+                self.runtime.record_task_log("跳过分析", {"原因": "没有新 commit", "当前提交": short_sha(latest.sha)})
+                self.runtime.finish_task_log(
+                    status="跳过",
+                    message=message,
+                    elapsed_seconds=time.monotonic() - started_at,
+                )
+                return {"message": message, "task_log_path": task_log_path}
 
             if force_latest and latest.parents:
                 previous_sha = latest.parents[0]
 
             if send_to_groups and not push_targets:
-                return {"message": "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"}
+                message = "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"
+                self.runtime.record_task_log("跳过分析", {"原因": "未配置推送群聊列表"})
+                self.runtime.finish_task_log(
+                    status="跳过",
+                    message=message,
+                    elapsed_seconds=time.monotonic() - started_at,
+                )
+                return {"message": message, "task_log_path": task_log_path}
 
             logger.warning("[%s] 步骤 2/5: 对比 commits (%s...%s)...", PLUGIN_NAME, short_sha(previous_sha), short_sha(latest.sha))
+            self.runtime.record_task_log(
+                "步骤 2/5 开始",
+                {
+                    "内容": "对比 commits",
+                    "提交范围": f"{short_sha(previous_sha)}...{short_sha(latest.sha)}",
+                },
+            )
             compare_payload = await asyncio.to_thread(client.compare_commits, REPO_FULL_NAME, previous_sha, latest.sha)
             logger.warning("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
+            self.runtime.record_task_log(
+                "步骤 2/5 完成",
+                {"文件变更数": len(compare_payload.get("files", []))},
+            )
 
             logger.warning("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
+            self.runtime.record_task_log("步骤 3/5 开始", {"内容": "获取原始 diff"})
             try:
                 raw_diff_text = await asyncio.to_thread(client.compare_diff_text, REPO_FULL_NAME, previous_sha, latest.sha)
                 logger.warning("[%s] 已完成获取原始 diff", PLUGIN_NAME)
+                self.runtime.record_task_log("步骤 3/5 完成", {"原始 diff 字符数": len(raw_diff_text)})
             except GitHubRequestError as exc:
                 raw_diff_text = ""
                 logger.warning("[%s] 获取原始 diff 失败，使用 compare API 文件列表兜底: %s", PLUGIN_NAME, exc)
+                self.runtime.record_task_log(
+                    "步骤 3/5 失败后兜底",
+                    {"原因": str(exc), "兜底": "使用 compare API 文件列表"},
+                )
 
             logger.warning("[%s] 步骤 4/5: 构建 diff 摘要...", PLUGIN_NAME)
+            self.runtime.record_task_log("步骤 4/5 开始", {"内容": "构建 diff 摘要"})
             summary = build_diff_summary(
                 compare_payload,
                 raw_diff_text=raw_diff_text,
@@ -215,6 +275,14 @@ class UpdateCheckService:
                 len(summary.chunks),
                 input_token_count,
             )
+            self.runtime.record_task_log(
+                "步骤 4/5 完成",
+                {
+                    "文件数": summary.total_files,
+                    "模型请求分片数": len(summary.chunks),
+                    "预计输入token": input_token_count,
+                },
+            )
 
             sent_count = 0
             failed_count = 0
@@ -224,6 +292,7 @@ class UpdateCheckService:
             admin_failed_count = 0
 
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
+            self.runtime.record_task_log("步骤 5/5 开始", {"内容": "分析并生成报告"})
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
             token_usage = sum_token_usage(result.token_usage for result in chunk_results)
             analysis_failure_reasons = chunk_failure_reasons(chunk_results)
@@ -235,6 +304,7 @@ class UpdateCheckService:
                 merged_analysis = analysis
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
+                    self.runtime.record_task_log("总结模型开始", {"内容": "整理合并报告"})
                     analysis, summary_usage = await refine_merged_analysis_with_usage(
                         self.context,
                         self.settings,
@@ -247,6 +317,13 @@ class UpdateCheckService:
                 analysis_failure_reasons.append(f"合并分片分析结果失败: {exc}")
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
+                    self.runtime.record_task_log(
+                        "总结模型开始",
+                        {
+                            "内容": "合并失败后改用分片原始分析 JSON 生成报告",
+                            "合并错误": str(exc),
+                        },
+                    )
                     analysis, summary_usage = await refine_chunk_analyses_with_usage(
                         self.context,
                         self.settings,
@@ -267,6 +344,15 @@ class UpdateCheckService:
                 token_usage.total_tokens,
                 token_usage.prompt_tokens,
                 token_usage.completion_tokens,
+            )
+            self.runtime.record_task_log(
+                "模型分析完成",
+                {
+                    "失败原因数": len(analysis_failure_reasons),
+                    "真实总token": token_usage.total_tokens,
+                    "真实输入token": token_usage.prompt_tokens,
+                    "真实输出token": token_usage.completion_tokens,
+                },
             )
             report_chunk = DiffChunk(
                 index=1,
@@ -309,6 +395,15 @@ class UpdateCheckService:
                     cleanup_keep=cleanup_keep,
                     token_usage=report_token_usage,
                 )
+                self.runtime.record_task_log(
+                    "报告文件生成",
+                    {
+                        "报告类型": display_name or "合并报告",
+                        "图片路径": str(image_path) if image_path else "",
+                        "报告日志路径": str(log_path),
+                        "报告总token": report_token_usage.total_tokens,
+                    },
+                )
                 report_artifacts.append(
                     ReportArtifact(
                         key=key,
@@ -347,6 +442,13 @@ class UpdateCheckService:
                     analysis_failure_reasons=analysis_failure_reasons,
                     log_path=log_path,
                 )
+                self.runtime.record_task_log(
+                    "分析失败",
+                    {
+                        "失败原因": analysis_failure_reasons[:8],
+                        "跳过群推送": "是",
+                    },
+                )
                 if self.settings.admin_targets:
                     logger.warning(
                         "[%s] 分析失败，跳过群推送，私发通知 %d 个管理员...",
@@ -365,8 +467,13 @@ class UpdateCheckService:
                         admin_sent_count,
                         admin_failed_count,
                     )
+                    self.runtime.record_task_log(
+                        "管理员通知完成",
+                        {"成功": admin_sent_count, "失败": admin_failed_count},
+                    )
                 else:
                     logger.warning("[%s] 分析失败，已跳过群推送，但未配置管理员列表，无法私发通知", PLUGIN_NAME)
+                    self.runtime.record_task_log("管理员通知跳过", {"原因": "未配置管理员列表"})
 
             if not analysis_failed and send_to_groups and push_targets:
                 logger.warning(
@@ -374,6 +481,10 @@ class UpdateCheckService:
                     PLUGIN_NAME,
                     len(report_artifacts),
                     len(push_targets),
+                )
+                self.runtime.record_task_log(
+                    "报告推送开始",
+                    {"报告份数": len(report_artifacts), "目标群数": len(push_targets)},
                 )
                 for report in report_artifacts:
                     ok, failed = await push_report(
@@ -394,6 +505,14 @@ class UpdateCheckService:
                         ok,
                         failed,
                     )
+                    self.runtime.record_task_log(
+                        "报告推送完成",
+                        {
+                            "报告类型": report.display_name or "合并报告",
+                            "成功": ok,
+                            "失败": failed,
+                        },
+                    )
                     if report.append_text:
                         text_ok, text_failed = await push_text(
                             self.context,
@@ -410,6 +529,14 @@ class UpdateCheckService:
                             text_ok,
                             text_failed,
                         )
+                        self.runtime.record_task_log(
+                            "追加文字推送完成",
+                            {
+                                "报告类型": report.display_name or "合并报告",
+                                "成功": text_ok,
+                                "失败": text_failed,
+                            },
+                        )
 
             if not analysis_failed and send_to_groups and file_targets:
                 logger.warning(
@@ -417,6 +544,10 @@ class UpdateCheckService:
                     PLUGIN_NAME,
                     len(report_artifacts),
                     len(file_targets),
+                )
+                self.runtime.record_task_log(
+                    "分析日志文件推送开始",
+                    {"报告份数": len(report_artifacts), "目标群数": len(file_targets)},
                 )
                 for report in report_artifacts:
                     file_ok, file_failed = await push_log_file(
@@ -431,6 +562,14 @@ class UpdateCheckService:
                         report.display_name or "",
                         file_ok,
                         file_failed,
+                    )
+                    self.runtime.record_task_log(
+                        "分析日志文件推送完成",
+                        {
+                            "报告类型": report.display_name or "合并报告",
+                            "成功": file_ok,
+                            "失败": file_failed,
+                        },
                     )
 
             self.runtime.save_task_state(
@@ -453,6 +592,7 @@ class UpdateCheckService:
                 sent_count=sent_count,
                 failed_count=failed_count,
                 token_usage=token_usage,
+                task_log_path=task_log_path,
             )
 
             should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and report_sent_count > 0)
@@ -494,6 +634,7 @@ class UpdateCheckService:
                 "message": message,
                 "image_path": image_path,
                 "log_path": log_path,
+                "task_log_path": task_log_path,
                 "append_text": append_text,
                 "analysis_failed": analysis_failed,
                 "admin_sent_count": admin_sent_count,
@@ -513,6 +654,11 @@ class UpdateCheckService:
                     for report in report_artifacts
                 ],
             }
+            self.runtime.finish_task_log(
+                status="完成（分析失败）" if analysis_failed else "完成",
+                message=message,
+                elapsed_seconds=time.monotonic() - started_at,
+            )
             if image_path:
                 return result
             if send_to_groups:

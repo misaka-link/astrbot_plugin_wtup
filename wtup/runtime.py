@@ -48,20 +48,131 @@ class RuntimeState:
         state_store: StateStore,
         log_dir: Path,
         error_dir: Path,
+        task_log_dir: Path | None = None,
     ) -> None:
         self.settings = settings
         self.state_store = state_store
         self.log_dir = log_dir
         self.error_dir = error_dir
+        self.task_log_dir = task_log_dir if task_log_dir is not None else log_dir.parent / "task_logs"
+        self._task_log_path: Path | None = None
+        self._task_log_request_count = 0
+        self._task_log_started_at = 0.0
 
     def with_runtime_hooks(self, settings: PluginConfig) -> PluginConfig:
         try:
             from dataclasses import replace
 
-            return replace(settings, model_error_recorder=self.record_model_error)
+            return replace(
+                settings,
+                model_error_recorder=self.record_model_error,
+                task_log_recorder=self.record_task_log,
+            )
         except Exception:
             settings.model_error_recorder = self.record_model_error  # type: ignore[misc]
+            settings.task_log_recorder = self.record_task_log  # type: ignore[misc]
             return settings
+
+    @property
+    def current_task_log_path(self) -> Path | None:
+        return self._task_log_path
+
+    def current_task_elapsed_seconds(self) -> float:
+        if self._task_log_started_at <= 0:
+            return 0.0
+        return time.monotonic() - self._task_log_started_at
+
+    def start_task_log(self, *, manual: bool, force_latest: bool, send_to_groups: bool) -> Path:
+        self.task_log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        base_name = (
+            f"{now.year}年{now.month}月{now.day}日"
+            f"{now.hour:02d}时{now.minute:02d}分{now.second:02d}秒_任务.log"
+        )
+        output_path = self.task_log_dir / sanitize_filename(base_name)
+        suffix = 1
+        while output_path.exists():
+            output_path = self.task_log_dir / sanitize_filename(base_name.replace(".log", f"_{suffix}.log"))
+            suffix += 1
+
+        self._task_log_path = output_path
+        self._task_log_request_count = 0
+        self._task_log_started_at = time.monotonic()
+        header = [
+            "WT 更新检查任务日志",
+            f"开始时间: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"仓库: {REPO_FULL_NAME}",
+            f"分支: {BRANCH_NAME}",
+            f"触发方式: {'手动' if manual else '定时'}",
+            f"强制最新: {'是' if force_latest else '否'}",
+            f"群推送: {'是' if send_to_groups else '否'}",
+            "",
+        ]
+        output_path.write_text("\n".join(header), encoding="utf-8")
+        self.record_task_log(
+            "任务开始",
+            {
+                "触发方式": "手动" if manual else "定时",
+                "强制最新": "是" if force_latest else "否",
+                "群推送": "是" if send_to_groups else "否",
+                "分析模型": self.settings.provider_id or "默认模型",
+                "总结模型": self.settings.effective_summary_provider_id or "默认模型",
+                "模型请求并发数": self.settings.model_concurrency,
+            },
+        )
+        return output_path
+
+    def finish_task_log(self, *, status: str, message: str = "", elapsed_seconds: float = 0.0) -> None:
+        self.record_task_log(
+            "任务结束",
+            {
+                "状态": status,
+                "耗时": format_elapsed_duration(elapsed_seconds),
+                "模型请求次数": self._task_log_request_count,
+                "结果": message,
+            },
+        )
+        self.cleanup_saved_artifacts(self.task_log_dir)
+        self._task_log_path = None
+        self._task_log_request_count = 0
+        self._task_log_started_at = 0.0
+
+    def record_task_log(self, event: str, metadata: dict[str, Any] | None = None) -> int | None:
+        if self._task_log_path is None:
+            return None
+
+        payload = dict(metadata or {})
+        request_no: int | None = None
+        if event == "模型请求开始":
+            self._task_log_request_count += 1
+            request_no = self._task_log_request_count
+            payload = {"第几次模型请求": request_no, **payload}
+        elif "第几次模型请求" in payload:
+            try:
+                request_no = int(payload["第几次模型请求"])
+            except (TypeError, ValueError):
+                request_no = None
+
+        now = datetime.now()
+        lines = ["", f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] {event}"]
+        for key, value in payload.items():
+            if value is None:
+                continue
+            text = self._format_task_log_value(value)
+            lines.append(f"{key}: {text}")
+        try:
+            with self._task_log_path.open("a", encoding="utf-8") as file:
+                file.write("\n".join(lines))
+                file.write("\n")
+        except Exception as exc:
+            logger.warning("[%s] 写入任务日志失败: %s", PLUGIN_NAME, exc)
+        return request_no
+
+    @staticmethod
+    def _format_task_log_value(value: Any) -> str:
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
 
     def save_seen_commit(self, sha: str) -> None:
         self.update_repo_state(
@@ -202,6 +313,7 @@ class RuntimeState:
         sent_count: int,
         failed_count: int,
         token_usage: Any | None = None,
+        task_log_path: Path | None = None,
     ) -> None:
         token_usage_dict = {}
         to_dict = getattr(token_usage, "to_dict", None)
@@ -223,6 +335,7 @@ class RuntimeState:
             "sent_count": sent_count,
             "failed_count": failed_count,
             "token_usage": token_usage_dict,
+            "task_log_path": str(task_log_path or self.current_task_log_path or ""),
             "generated_at": now,
         }
         if reports:

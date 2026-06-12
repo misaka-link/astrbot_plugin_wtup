@@ -39,6 +39,37 @@ class RuntimeAppendTextTest(unittest.TestCase):
 
             self.assertEqual(text, "耗时:2分5秒\n别名:2分5秒\n分钟:3")
 
+    def test_task_log_records_model_request_details(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            runtime = RuntimeState(
+                settings=load_config({}),
+                state_store=StateStore(base / "state.json"),
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                task_log_dir=base / "task_logs",
+            )
+
+            task_log_path = runtime.start_task_log(manual=True, force_latest=True, send_to_groups=True)
+            request_no = runtime.record_task_log(
+                "模型请求开始",
+                {
+                    "Provider": "default",
+                    "输入token": 12,
+                },
+            )
+            runtime.finish_task_log(status="完成", message="ok", elapsed_seconds=1.2)
+
+            content = task_log_path.read_text(encoding="utf-8")
+            self.assertEqual(request_no, 1)
+            self.assertIn("任务开始", content)
+            self.assertIn("模型请求开始", content)
+            self.assertIn("第几次模型请求: 1", content)
+            self.assertIn("输入token: 12", content)
+            self.assertNotIn("请求内容", content)
+            self.assertNotIn("请分析这个 diff", content)
+            self.assertIn("任务结束", content)
+
 
 if __name__ == "__main__":
     unittest.main()

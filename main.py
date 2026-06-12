@@ -365,14 +365,24 @@ class WTUpdatePlugin(Star):
         target_groups: list[str] | None = None,
         analysis_file_groups: list[str] | None = None,
     ) -> dict[str, Any]:
-        return await self.service.check_once(
-            manual=manual,
-            force_latest=force_latest,
-            send_to_groups=send_to_groups,
-            event=event,
-            target_groups=target_groups,
-            analysis_file_groups=analysis_file_groups,
-        )
+        try:
+            return await self.service.check_once(
+                manual=manual,
+                force_latest=force_latest,
+                send_to_groups=send_to_groups,
+                event=event,
+                target_groups=target_groups,
+                analysis_file_groups=analysis_file_groups,
+            )
+        except Exception as exc:
+            runtime = getattr(getattr(self, "service", None), "runtime", None)
+            if runtime is not None and runtime.current_task_log_path is not None:
+                runtime.finish_task_log(
+                    status="异常",
+                    message=str(exc),
+                    elapsed_seconds=runtime.current_task_elapsed_seconds(),
+                )
+            raise
 
     def _resolve_data_dir(self) -> Path:
         try:

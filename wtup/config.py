@@ -66,6 +66,11 @@ class PluginConfig:
         compare=False,
         repr=False,
     )
+    task_log_recorder: Callable[[str, dict[str, Any]], Any] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def enable_summary_model(self) -> bool:
