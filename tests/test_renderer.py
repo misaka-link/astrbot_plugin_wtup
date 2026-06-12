@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from wtup.renderer import render_footer_note
+from wtup.diff_collector import DiffChunk, DiffSummary
+from wtup.renderer import build_report_html, render_footer_note
 
 
 class RendererFooterNoteTest(unittest.TestCase):
@@ -14,6 +17,34 @@ class RendererFooterNoteTest(unittest.TestCase):
 
     def test_footer_note_escapes_plain_text(self) -> None:
         self.assertEqual(render_footer_note("<script>x</script>"), "&lt;script&gt;x&lt;/script&gt;")
+
+    def test_build_report_html_injects_split_css_file(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "report.html"
+            template_path.write_text(
+                "<html><head><style>{{ style_css }}</style></head><body>{{ report_title }}</body></html>",
+                encoding="utf-8",
+            )
+            template_path.with_suffix(".css").write_text(".card { color: red; }\n", encoding="utf-8")
+            summary = DiffSummary(
+                base_sha="base123",
+                head_sha="head456",
+                compare_url="",
+                total_commits=1,
+                total_files=0,
+                additions=0,
+                deletions=0,
+                changed_files=0,
+                commits=[],
+                files=[],
+                chunks=[],
+            )
+            chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+
+            html = build_report_html(template_path, summary, chunk, {"summary": "摘要"})
+
+            self.assertIn(".card { color: red; }", html)
+            self.assertNotIn("{{ style_css }}", html)
 
 
 if __name__ == "__main__":

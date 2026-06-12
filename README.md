@@ -14,6 +14,21 @@ mode: commit
 
 发现新 commit 后，插件会获取 GitHub compare 数据，把 commit、文件列表和 patch 交给 AstrBot 已配置的大模型分析，然后使用 `templates/help_miku.html` 渲染图片并主动推送到配置的群聊列表。
 
+## 项目结构
+
+主要代码按职责拆分：
+
+- `main.py`：AstrBot 插件入口，负责生命周期、命令注册和调用检查服务。
+- `wtup/service.py`：一次更新检查的主流程编排，包括拉取 GitHub 数据、生成报告、推送结果。
+- `wtup/runtime.py`：运行时状态、错误日志、报告日志和推送附加文字格式化。
+- `wtup/analysis/`：模型分析相关模块，包含提示词、模型请求、JSON 修复、失败重试、结果合并和结构标准化。
+- `wtup/analyzer.py`：兼容导出层，保留旧的 `wtup.analyzer` 导入路径。
+- `wtup/diff_collector.py`：GitHub compare/diff 数据整理和文件分片。
+- `wtup/renderer.py`：报告 HTML、纯文本和图片渲染辅助。
+- `wtup/notifier.py`：群消息、文字消息和日志文件推送。
+- `templates/help_miku.html`：报告 HTML 骨架。
+- `templates/help_miku.css`：报告样式文件，由 `renderer.py` 读取后注入 HTML。
+
 ## 配置
 
 后台配置项：

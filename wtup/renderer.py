@@ -38,11 +38,13 @@ def build_report_html(
     footer_note: str = "",
 ) -> str:
     template = template_path.read_text(encoding="utf-8")
+    style_css = load_template_css(template_path)
     importance = str(analysis.get("importance") or "中")
     report_title = report_display_title(summary, chunk, analysis)
     update_subtitle = report_update_subtitle(chunk, analysis)
 
     replacements = {
+        "{{ style_css }}": style_css,
         "{{ hero_image_src }}": "",
         "{{ report_kicker }}": f"GitHub Commit Monitor · 重要度 {importance}",
         "{{ report_title }}": "War Thunder Datamine 更新",
@@ -62,6 +64,15 @@ def build_report_html(
     for needle, value in replacements.items():
         template = template.replace(needle, value)
     return template
+
+
+def load_template_css(template_path: Path) -> str:
+    css_path = template_path.with_suffix(".css")
+    try:
+        return css_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning("[%s] 模板样式文件不存在: %s", PLUGIN_NAME, css_path)
+        return ""
 
 
 async def render_report_image(plugin: Any, html_text: str, output_dir: Path) -> Path | None:
