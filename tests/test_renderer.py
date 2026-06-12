@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from wtup.diff_collector import DiffChunk, DiffSummary
+from wtup.analysis import TokenUsage
 from wtup.renderer import build_report_html, render_footer_note, render_plain_text
 
 
@@ -45,6 +46,39 @@ class RendererFooterNoteTest(unittest.TestCase):
 
             self.assertIn(".card { color: red; }", html)
             self.assertNotIn("{{ style_css }}", html)
+
+    def test_build_report_html_injects_token_usage(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "report.html"
+            template_path.write_text(
+                "<footer>{{ token_usage }}</footer>",
+                encoding="utf-8",
+            )
+            template_path.with_suffix(".css").write_text("", encoding="utf-8")
+            summary = DiffSummary(
+                base_sha="base123",
+                head_sha="head456",
+                compare_url="",
+                total_commits=1,
+                total_files=0,
+                additions=0,
+                deletions=0,
+                changed_files=0,
+                commits=[],
+                files=[],
+                chunks=[],
+            )
+            chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+
+            html = build_report_html(
+                template_path,
+                summary,
+                chunk,
+                {"summary": "摘要"},
+                token_usage=TokenUsage(prompt_tokens=12, completion_tokens=8, total_tokens=20),
+            )
+
+            self.assertIn("Token 消耗：总 20 · 输入 12 · 输出 8", html)
 
     def test_render_plain_text_does_not_include_source_url(self) -> None:
         summary = DiffSummary(

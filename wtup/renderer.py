@@ -17,6 +17,7 @@ except ModuleNotFoundError:
 
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME
 from .diff_collector import DiffChunk, DiffSummary, short_sha
+from .token_usage import format_token_usage_text
 
 
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
@@ -37,6 +38,7 @@ def build_report_html(
     *,
     footer_note: str = "",
     report_label: str = "",
+    token_usage: Any | None = None,
 ) -> str:
     template = template_path.read_text(encoding="utf-8")
     style_css = load_template_css(template_path)
@@ -64,6 +66,7 @@ def build_report_html(
         "{{ table_html }}": "",
         "{{ sections_html }}": "",
         "{{ footer_note }}": render_footer_note(footer_note),
+        "{{ token_usage }}": html.escape(format_token_usage_text(token_usage)),
         "{{ footer_badge }}": html.escape(time.strftime("%Y-%m-%d %H:%M:%S")),
     }
     for needle, value in replacements.items():

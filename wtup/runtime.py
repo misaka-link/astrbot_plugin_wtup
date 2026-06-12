@@ -18,6 +18,7 @@ from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import short_sha
 from .report_log import add_report_log_suffix, build_report_log_filename, sanitize_filename
 from .state_store import StateStore
+from .token_usage import format_token_usage_text
 
 
 LOG_SEPARATOR = "=============="
@@ -97,6 +98,7 @@ class RuntimeState:
         filename_suffix: str = "",
         display_name: str = "",
         cleanup_keep: int | None = None,
+        token_usage: Any | None = None,
     ) -> Path:
         title = str(analysis.get("report_title") or "").strip()
         filename = build_report_log_filename(title)
@@ -113,6 +115,7 @@ class RuntimeState:
         ]
         if display_name:
             header.append(f"报告类型: {display_name}")
+        header.append(format_token_usage_text(token_usage))
         header.extend(["", str(fallback_text or "").strip(), ""])
 
         self.log_dir.mkdir(parents=True, exist_ok=True)

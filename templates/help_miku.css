@@ -444,8 +444,8 @@ li {
 
 .footer {
   margin-top: 16px;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   color: #6b7f88;
@@ -458,6 +458,7 @@ li {
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+  justify-self: start;
 }
 
 .footer-note a {
@@ -465,7 +466,18 @@ li {
   text-decoration: none;
 }
 
+.token-usage {
+  justify-self: center;
+  color: #ff0000;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 900;
+  text-align: center;
+  white-space: nowrap;
+}
+
 .pill {
+  justify-self: end;
   padding: 8px 12px;
   border-radius: 999px;
   background: rgba(57, 197, 187, 0.12);

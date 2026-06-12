@@ -203,6 +203,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                     "summary": "分析前摘要",
                     "update_sections": [],
                 },
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
             )
             final_analysis = {
                 "report_title": "2.56.0.38->2.56.0.39",
@@ -216,7 +217,12 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
                 patch(
                     "wtup.service.refine_merged_analysis_with_usage",
-                    new=AsyncMock(return_value=(final_analysis, TokenUsage())),
+                    new=AsyncMock(
+                        return_value=(
+                            final_analysis,
+                            TokenUsage(prompt_tokens=30, completion_tokens=20, total_tokens=50),
+                        )
+                    ),
                 ),
                 patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
@@ -247,6 +253,10 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             task = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")["last_generated_task"]
             self.assertEqual(task["log_path"], str(base / "logs" / "2.56.0.38_2.56.0.39_总分析后.log"))
             self.assertEqual([report["key"] for report in task["reports"]], ["pre_summary", "final"])
+            pre_log = (base / "logs" / "2.56.0.38_2.56.0.39_总分析前.log").read_text(encoding="utf-8")
+            post_log = (base / "logs" / "2.56.0.38_2.56.0.39_总分析后.log").read_text(encoding="utf-8")
+            self.assertIn("Token 消耗：总 150 · 输入 100 · 输出 50", pre_log)
+            self.assertIn("Token 消耗：总 200 · 输入 130 · 输出 70", post_log)
 
 
 if __name__ == "__main__":

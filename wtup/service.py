@@ -30,6 +30,7 @@ from .notifier import push_log_file, push_report, push_text
 from .renderer import build_report_html, render_plain_text, render_report_image
 from .runtime import RuntimeState, ceil_minutes, warning_log
 from .state_store import StateStore
+from .analysis import TokenUsage
 
 
 @dataclass
@@ -41,6 +42,7 @@ class ReportArtifact:
     fallback_text: str
     image_path: Path | None
     log_path: Path
+    token_usage: TokenUsage
 
 
 class UpdateCheckService:
@@ -164,6 +166,7 @@ class UpdateCheckService:
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
             token_usage = sum_token_usage(result.token_usage for result in chunk_results)
+            pre_summary_token_usage = token_usage
             summary_model_enabled = self.settings.enable_summary_model
             merged_analysis: dict[str, Any] | None = None
             try:
@@ -207,19 +210,21 @@ class UpdateCheckService:
                 files=summary.files,
                 patch_chars=sum(chunk.patch_chars for chunk in summary.chunks),
             )
-            report_specs: list[tuple[str, str, dict[str, Any], str]] = []
+            report_specs: list[tuple[str, str, dict[str, Any], str, TokenUsage]] = []
             if self.settings.enable_pre_summary_report and summary_model_enabled and merged_analysis is not None:
-                report_specs.append(("pre_summary", "总分析模型分析前", merged_analysis, "总分析前"))
+                report_specs.append(
+                    ("pre_summary", "总分析模型分析前", merged_analysis, "总分析前", pre_summary_token_usage)
+                )
             post_label = "总分析模型分析后" if report_specs else ""
             post_suffix = "总分析后" if report_specs else ""
-            report_specs.append(("final", post_label, analysis, post_suffix))
+            report_specs.append(("final", post_label, analysis, post_suffix, token_usage))
             report_artifacts: list[ReportArtifact] = []
             cleanup_keep = (
                 None
                 if self.settings.max_saved_artifacts <= 0
                 else max(self.settings.max_saved_artifacts, len(report_specs))
             )
-            for key, display_name, report_analysis, filename_suffix in report_specs:
+            for key, display_name, report_analysis, filename_suffix, report_token_usage in report_specs:
                 html_text = build_report_html(
                     self.template_path,
                     summary,
@@ -227,6 +232,7 @@ class UpdateCheckService:
                     report_analysis,
                     footer_note=self.settings.footer_note,
                     report_label=display_name,
+                    token_usage=report_token_usage,
                 )
                 image_path = await render_report_image(self.render_host, html_text, self.image_dir)
                 fallback_text = render_plain_text(summary, report_chunk, report_analysis, report_label=display_name)
@@ -237,6 +243,7 @@ class UpdateCheckService:
                     filename_suffix=filename_suffix,
                     display_name=display_name,
                     cleanup_keep=cleanup_keep,
+                    token_usage=report_token_usage,
                 )
                 report_artifacts.append(
                     ReportArtifact(
@@ -247,6 +254,7 @@ class UpdateCheckService:
                         fallback_text=fallback_text,
                         image_path=image_path,
                         log_path=log_path,
+                        token_usage=report_token_usage,
                     )
                 )
             self.runtime.cleanup_saved_artifacts(self.image_dir, keep=cleanup_keep)

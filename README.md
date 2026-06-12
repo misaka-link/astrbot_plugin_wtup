@@ -14,6 +14,8 @@ mode: commit
 
 发现新 commit 后，插件会获取 GitHub compare 数据，把 commit、文件列表和 patch 交给 AstrBot 已配置的大模型分析，然后使用 `templates/help_miku.html` 渲染图片并主动推送到配置的群聊列表。
 
+报告图片底部会居中显示本次模型 token 消耗，格式为 `Token 消耗：总 X · 输入 Y · 输出 Z`。`总`、`输入`、`输出` 分别对应模型接口返回的 `total_tokens`、`prompt_tokens`、`completion_tokens` 累计值；如果 Provider 不返回 usage，则显示为 0。
+
 ## 项目结构
 
 主要代码按职责拆分：
@@ -21,6 +23,7 @@ mode: commit
 - `main.py`：AstrBot 插件入口，负责生命周期、命令注册和调用检查服务。
 - `wtup/service.py`：一次更新检查的主流程编排，包括拉取 GitHub 数据、生成报告、推送结果。
 - `wtup/runtime.py`：运行时状态、错误日志、报告日志和推送附加文字格式化。
+- `wtup/token_usage.py`：token usage 数字读取和展示文案格式化。
 - `wtup/analysis/`：模型分析相关模块，包含提示词、模型请求、JSON 修复、失败重试、结果合并和结构标准化。
 - `wtup/analyzer.py`：兼容导出层，保留旧的 `wtup.analyzer` 导入路径。
 - `wtup/diff_collector.py`：GitHub compare/diff 数据整理和文件分片。
@@ -122,6 +125,8 @@ https://github.com/settings/tokens
 
 插件会统计本次检查内所有模型调用返回的 token usage，包括分片分析、失败后拆分重试、JSON 修复请求和总结模型请求。统计口径优先使用 AstrBot Provider 返回的 `usage.input`、`usage.output`、`usage.total`，同时兼容 OpenAI 风格的 `prompt_tokens`、`completion_tokens`、`total_tokens`；如果当前 Provider 不返回 usage，则对应请求记为 0，不再用输入估算值冒充真实消耗。
 
+启用 `enable_pre_summary_report` 的双报告模式下，分析前报告显示和保存的是总结模型调用前的累计 token；分析后报告显示和保存的是包含总结模型在内的最终累计 token。
+
 ## 推送附加内容
 
 开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息。默认模板示例：
@@ -143,7 +148,7 @@ https://github.com/settings/tokens
 插件会在 AstrBot 插件数据目录中保存运行数据：
 
 - `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。启用双报告时，任务状态的 `reports` 会记录每份报告的日志和图片路径，旧的 `log_path`、`image_path` 字段仍指向最终报告。
-- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。启用双报告时，会保存为 `旧版本_新版本_总分析前.log` 和 `旧版本_新版本_总分析后.log`。
+- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。日志头部会保存本次 token 消耗，格式为 `Token 消耗：总 X · 输入 Y · 输出 Z`。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。启用双报告时，会保存为 `旧版本_新版本_总分析前.log` 和 `旧版本_新版本_总分析后.log`。
 - `errors/`：保存模型请求、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback 和本次 compare/chunk 元数据。
 - `images/`：保存渲染后的报告图片。
 
