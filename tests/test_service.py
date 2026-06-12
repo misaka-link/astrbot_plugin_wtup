@@ -145,6 +145,109 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             task = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")["last_generated_task"]
             self.assertEqual(task["token_usage"]["total_tokens"], 150)
 
+    async def test_check_once_generates_and_pushes_pre_summary_report_when_enabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            template_path = base / "help_miku.html"
+            template_path.write_text(
+                "<div>{{ report_kicker }}</div><div>{{ summary_html }}</div>",
+                encoding="utf-8",
+            )
+            template_path.with_suffix(".css").write_text(".card {}", encoding="utf-8")
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config(
+                    {
+                        "target_groups": ["123"],
+                        "analysis_file_groups": ["123"],
+                        "enable_summary_model": True,
+                        "enable_pre_summary_report": True,
+                    }
+                ),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=template_path,
+            )
+
+            latest = type("Commit", (), {"sha": "head", "parents": ["base"]})()
+            compare_payload = {
+                "base_commit": {"sha": "base"},
+                "merge_base_commit": {"sha": "base"},
+                "status": "ahead",
+                "ahead_by": 1,
+                "total_commits": 1,
+                "commits": [],
+                "files": [
+                    {
+                        "filename": "a.blkx",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "patch": "+a",
+                    }
+                ],
+                "html_url": "",
+            }
+            chunk_result = ChunkAnalysis(
+                1,
+                1,
+                {
+                    "report_title": "2.56.0.38->2.56.0.39",
+                    "summary": "分析前摘要",
+                    "update_sections": [],
+                },
+            )
+            final_analysis = {
+                "report_title": "2.56.0.38->2.56.0.39",
+                "summary": "分析后摘要",
+                "update_sections": [],
+            }
+
+            with (
+                patch("wtup.service.GitHubClient") as client_class,
+                patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
+                patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
+                patch(
+                    "wtup.service.refine_merged_analysis_with_usage",
+                    new=AsyncMock(return_value=(final_analysis, TokenUsage())),
+                ),
+                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
+                patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))) as push_log_file,
+            ):
+                client = client_class.return_value
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = compare_payload
+                client.compare_diff_text.return_value = ""
+
+                await service.check_once(manual=True, force_latest=False, send_to_groups=True)
+
+            self.assertEqual(push_report.await_count, 2)
+            pushed_texts = [call.kwargs["fallback_text"] for call in push_report.await_args_list]
+            self.assertIn("【总分析模型分析前】", pushed_texts[0])
+            self.assertIn("分析前摘要", pushed_texts[0])
+            self.assertIn("【总分析模型分析后】", pushed_texts[1])
+            self.assertIn("分析后摘要", pushed_texts[1])
+            self.assertEqual(push_log_file.await_count, 2)
+            log_names = [call.kwargs["log_path"].name for call in push_log_file.await_args_list]
+            self.assertEqual(
+                log_names,
+                [
+                    "2.56.0.38_2.56.0.39_总分析前.log",
+                    "2.56.0.38_2.56.0.39_总分析后.log",
+                ],
+            )
+            task = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")["last_generated_task"]
+            self.assertEqual(task["log_path"], str(base / "logs" / "2.56.0.38_2.56.0.39_总分析后.log"))
+            self.assertEqual([report["key"] for report in task["reports"]], ["pre_summary", "final"])
+
 
 if __name__ == "__main__":
     unittest.main()

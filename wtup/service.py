@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,17 @@ from .notifier import push_log_file, push_report, push_text
 from .renderer import build_report_html, render_plain_text, render_report_image
 from .runtime import RuntimeState, ceil_minutes, warning_log
 from .state_store import StateStore
+
+
+@dataclass
+class ReportArtifact:
+    key: str
+    display_name: str
+    analysis: dict[str, Any]
+    html_text: str
+    fallback_text: str
+    image_path: Path | None
+    log_path: Path
 
 
 class UpdateCheckService:
@@ -149,12 +161,14 @@ class UpdateCheckService:
             sent_count = 0
             failed_count = 0
 
-            logger.warning("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
+            logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
             token_usage = sum_token_usage(result.token_usage for result in chunk_results)
             summary_model_enabled = self.settings.enable_summary_model
+            merged_analysis: dict[str, Any] | None = None
             try:
                 analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
+                merged_analysis = analysis
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
                     analysis, summary_usage = await refine_merged_analysis_with_usage(
@@ -193,31 +207,79 @@ class UpdateCheckService:
                 files=summary.files,
                 patch_chars=sum(chunk.patch_chars for chunk in summary.chunks),
             )
-            html_text = build_report_html(
-                self.template_path,
-                summary,
-                report_chunk,
-                analysis,
-                footer_note=self.settings.footer_note,
+            report_specs: list[tuple[str, str, dict[str, Any], str]] = []
+            if self.settings.enable_pre_summary_report and summary_model_enabled and merged_analysis is not None:
+                report_specs.append(("pre_summary", "总分析模型分析前", merged_analysis, "总分析前"))
+            post_label = "总分析模型分析后" if report_specs else ""
+            post_suffix = "总分析后" if report_specs else ""
+            report_specs.append(("final", post_label, analysis, post_suffix))
+            report_artifacts: list[ReportArtifact] = []
+            cleanup_keep = (
+                None
+                if self.settings.max_saved_artifacts <= 0
+                else max(self.settings.max_saved_artifacts, len(report_specs))
             )
-            image_path = await render_report_image(self.render_host, html_text, self.image_dir)
-            self.runtime.cleanup_saved_artifacts(self.image_dir)
-            fallback_text = render_plain_text(summary, report_chunk, analysis)
-            log_path = self.runtime.save_report_log(summary, analysis, fallback_text)
+            for key, display_name, report_analysis, filename_suffix in report_specs:
+                html_text = build_report_html(
+                    self.template_path,
+                    summary,
+                    report_chunk,
+                    report_analysis,
+                    footer_note=self.settings.footer_note,
+                    report_label=display_name,
+                )
+                image_path = await render_report_image(self.render_host, html_text, self.image_dir)
+                fallback_text = render_plain_text(summary, report_chunk, report_analysis, report_label=display_name)
+                log_path = self.runtime.save_report_log(
+                    summary,
+                    report_analysis,
+                    fallback_text,
+                    filename_suffix=filename_suffix,
+                    display_name=display_name,
+                    cleanup_keep=cleanup_keep,
+                )
+                report_artifacts.append(
+                    ReportArtifact(
+                        key=key,
+                        display_name=display_name,
+                        analysis=report_analysis,
+                        html_text=html_text,
+                        fallback_text=fallback_text,
+                        image_path=image_path,
+                        log_path=log_path,
+                    )
+                )
+            self.runtime.cleanup_saved_artifacts(self.image_dir, keep=cleanup_keep)
+            final_report = report_artifacts[-1]
+            image_path = final_report.image_path
+            fallback_text = final_report.fallback_text
+            log_path = final_report.log_path
             elapsed_minutes = ceil_minutes(time.monotonic() - started_at)
 
             if send_to_groups and self.settings.target_groups:
-                logger.warning("[%s] 推送合并报告到 %d 个群聊...", PLUGIN_NAME, len(self.settings.target_groups))
-                ok, failed = await push_report(
-                    self.context,
-                    self.settings.target_groups,
-                    image_path=image_path,
-                    fallback_text=fallback_text,
-                    event=event,
+                logger.warning(
+                    "[%s] 推送 %d 份报告到 %d 个群聊...",
+                    PLUGIN_NAME,
+                    len(report_artifacts),
+                    len(self.settings.target_groups),
                 )
-                sent_count += ok
-                failed_count += failed
-                logger.warning("[%s] 推送完成合并报告: 成功 %d，失败 %d", PLUGIN_NAME, ok, failed)
+                for report in report_artifacts:
+                    ok, failed = await push_report(
+                        self.context,
+                        self.settings.target_groups,
+                        image_path=report.image_path,
+                        fallback_text=report.fallback_text,
+                        event=event,
+                    )
+                    sent_count += ok
+                    failed_count += failed
+                    logger.warning(
+                        "[%s] 推送完成%s: 成功 %d，失败 %d",
+                        PLUGIN_NAME,
+                        report.display_name or "合并报告",
+                        ok,
+                        failed,
+                    )
                 if self.settings.enable_push_append_text:
                     append_text = self.runtime.build_push_append_text(
                         analysis=analysis,
@@ -236,20 +298,41 @@ class UpdateCheckService:
                     logger.warning("[%s] 追加文字推送完成: 成功 %d，失败 %d", PLUGIN_NAME, text_ok, text_failed)
 
             if send_to_groups and self.settings.analysis_file_groups:
-                logger.warning("[%s] 推送分析日志文件到 %d 个群聊...", PLUGIN_NAME, len(self.settings.analysis_file_groups))
-                file_ok, file_failed = await push_log_file(
-                    self.context,
-                    self.settings.analysis_file_groups,
-                    log_path=log_path,
-                    event=event,
+                logger.warning(
+                    "[%s] 推送 %d 份分析日志文件到 %d 个群聊...",
+                    PLUGIN_NAME,
+                    len(report_artifacts),
+                    len(self.settings.analysis_file_groups),
                 )
-                logger.warning("[%s] 分析日志文件推送完成: 成功 %d，失败 %d", PLUGIN_NAME, file_ok, file_failed)
+                for report in report_artifacts:
+                    file_ok, file_failed = await push_log_file(
+                        self.context,
+                        self.settings.analysis_file_groups,
+                        log_path=report.log_path,
+                        event=event,
+                    )
+                    logger.warning(
+                        "[%s] %s分析日志文件推送完成: 成功 %d，失败 %d",
+                        PLUGIN_NAME,
+                        report.display_name or "",
+                        file_ok,
+                        file_failed,
+                    )
 
             self.runtime.save_task_state(
                 summary=summary,
                 analysis=analysis,
                 log_path=log_path,
                 image_path=image_path,
+                reports=[
+                    {
+                        "key": report.key,
+                        "display_name": report.display_name,
+                        "log_path": report.log_path,
+                        "image_path": report.image_path,
+                    }
+                    for report in report_artifacts
+                ],
                 manual=manual,
                 sent_to_groups=bool(send_to_groups and self.settings.target_groups),
                 sent_count=sent_count,
@@ -263,7 +346,7 @@ class UpdateCheckService:
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
                 f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if summary_model_enabled else 0)} 次，"
-                f"并发 {self.settings.model_concurrency}，已合并为 1 份报告。"
+                f"并发 {self.settings.model_concurrency}，已生成 {len(report_artifacts)} 份报告。"
             )
             if send_to_groups:
                 message += f" 推送成功 {sent_count}，失败 {failed_count}。"

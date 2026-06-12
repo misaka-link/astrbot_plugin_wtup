@@ -36,6 +36,7 @@ def build_report_html(
     analysis: dict[str, Any],
     *,
     footer_note: str = "",
+    report_label: str = "",
 ) -> str:
     template = template_path.read_text(encoding="utf-8")
     style_css = load_template_css(template_path)
@@ -43,10 +44,14 @@ def build_report_html(
     report_title = report_display_title(summary, chunk, analysis)
     update_subtitle = report_update_subtitle(chunk, analysis)
 
+    kicker_parts = ["GitHub Commit Monitor"]
+    if report_label:
+        kicker_parts.append(report_label)
+    kicker_parts.append(f"重要度 {importance}")
     replacements = {
         "{{ style_css }}": style_css,
         "{{ hero_image_src }}": "",
-        "{{ report_kicker }}": f"GitHub Commit Monitor · 重要度 {importance}",
+        "{{ report_kicker }}": " · ".join(kicker_parts),
         "{{ report_title }}": "War Thunder Datamine 更新",
         "{{ report_subtitle }}": html.escape(update_subtitle),
         "{{ repo_name }}": REPO_FULL_NAME,
@@ -98,8 +103,17 @@ async def render_report_image(plugin: Any, html_text: str, output_dir: Path) -> 
     return output_path
 
 
-def render_plain_text(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
-    lines = [report_display_title(summary, chunk, analysis)]
+def render_plain_text(
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    analysis: dict[str, Any],
+    *,
+    report_label: str = "",
+) -> str:
+    lines = []
+    if report_label:
+        lines.append(f"【{report_label}】")
+    lines.append(report_display_title(summary, chunk, analysis))
     update_subtitle = report_update_subtitle(chunk, analysis)
     if update_subtitle:
         lines.append(update_subtitle)

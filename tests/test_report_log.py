@@ -11,7 +11,7 @@ from pathlib import Path
 
 from wtup.config import PLUGIN_VERSION
 from wtup.config import load_config
-from wtup.report_log import build_report_log_filename, sanitize_filename
+from wtup.report_log import add_report_log_suffix, build_report_log_filename, sanitize_filename
 from wtup.runtime import RuntimeState
 from wtup.state_store import StateStore
 
@@ -31,6 +31,12 @@ class ReportLogFilenameTest(unittest.TestCase):
 
     def test_sanitize_filename_removes_windows_invalid_chars(self) -> None:
         self.assertEqual(sanitize_filename('a:b*c?"d<e>f|.log'), "a_b_c_d_e_f_.log")
+
+    def test_add_report_log_suffix_keeps_log_extension(self) -> None:
+        self.assertEqual(
+            add_report_log_suffix("2.56.0.38_2.56.0.39.log", "总分析前"),
+            "2.56.0.38_2.56.0.39_总分析前.log",
+        )
 
     def test_plugin_version_is_011(self) -> None:
         self.assertEqual(PLUGIN_VERSION, "0.1.1")

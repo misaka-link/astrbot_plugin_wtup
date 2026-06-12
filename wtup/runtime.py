@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import short_sha
-from .report_log import build_report_log_filename, sanitize_filename
+from .report_log import add_report_log_suffix, build_report_log_filename, sanitize_filename
 from .state_store import StateStore
 
 
@@ -93,9 +93,16 @@ class RuntimeState:
         summary: Any,
         analysis: dict[str, Any],
         fallback_text: str,
+        *,
+        filename_suffix: str = "",
+        display_name: str = "",
+        cleanup_keep: int | None = None,
     ) -> Path:
         title = str(analysis.get("report_title") or "").strip()
-        filename = sanitize_filename(build_report_log_filename(title))
+        filename = build_report_log_filename(title)
+        if filename_suffix:
+            filename = add_report_log_suffix(filename, filename_suffix)
+        filename = sanitize_filename(filename)
         output_path = self.log_dir / filename
         generated_at = datetime.now()
         header = [
@@ -104,11 +111,13 @@ class RuntimeState:
             f"分支: {BRANCH_NAME}",
             f"提交范围: {short_sha(summary.base_sha)}...{short_sha(summary.head_sha)}",
         ]
+        if display_name:
+            header.append(f"报告类型: {display_name}")
         header.extend(["", str(fallback_text or "").strip(), ""])
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         output_path.write_text("\n".join(header), encoding="utf-8")
-        self.cleanup_saved_artifacts(self.log_dir)
+        self.cleanup_saved_artifacts(self.log_dir, keep=cleanup_keep)
         logger.warning("[%s] 已保存最终报告日志: %s", PLUGIN_NAME, output_path)
         return output_path
 
@@ -173,6 +182,7 @@ class RuntimeState:
         analysis: dict[str, Any],
         log_path: Path,
         image_path: Path | None,
+        reports: list[dict[str, Any]] | None = None,
         manual: bool,
         sent_to_groups: bool,
         sent_count: int,
@@ -201,6 +211,16 @@ class RuntimeState:
             "token_usage": token_usage_dict,
             "generated_at": now,
         }
+        if reports:
+            task["reports"] = [
+                {
+                    "key": str(report.get("key") or ""),
+                    "display_name": str(report.get("display_name") or ""),
+                    "log_path": str(report.get("log_path") or ""),
+                    "image_path": str(report.get("image_path") or ""),
+                }
+                for report in reports
+            ]
         updates: dict[str, Any] = {"last_generated_task": task}
         if sent_to_groups:
             updates["last_pushed_task"] = {**task, "pushed_at": now}

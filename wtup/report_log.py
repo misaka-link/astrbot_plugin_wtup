@@ -21,6 +21,17 @@ def build_report_log_filename(report_title: str, *, now: datetime | None = None)
     )
 
 
+def add_report_log_suffix(filename: str, suffix: str) -> str:
+    clean_suffix = sanitize_filename(suffix, fallback="").strip(" ._")
+    if not clean_suffix:
+        return filename
+
+    path = str(filename or "").strip()
+    if path.lower().endswith(".log"):
+        return f"{path[:-4]}_{clean_suffix}.log"
+    return f"{path}_{clean_suffix}.log"
+
+
 def sanitize_filename(filename: str, *, fallback: str = "report.log") -> str:
     normalized = INVALID_FILENAME_CHARS_RE.sub("_", str(filename or "")).strip(" ._")
     return normalized or fallback

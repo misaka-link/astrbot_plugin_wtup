@@ -55,6 +55,7 @@ class PluginConfig:
     max_retry_count: int
     enable_push_append_text: bool
     push_append_text_template: str
+    enable_pre_summary_report: bool = False
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
     model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
@@ -175,6 +176,7 @@ def load_config(config: Any) -> PluginConfig:
         enable_second_pass_analysis=as_bool(
             config_get(config, "enable_summary_model", config_get(config, "enable_second_pass_analysis", False))
         ),
+        enable_pre_summary_report=as_bool(config_get(config, "enable_pre_summary_report", False)),
         footer_note=str(config_get(config, "footer_note", DEFAULT_FOOTER_NOTE) or DEFAULT_FOOTER_NOTE),
         target_groups=split_lines(config_get(config, "target_groups", "")),
         analysis_file_groups=split_lines(config_get(config, "analysis_file_groups", "")),

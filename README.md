@@ -43,6 +43,7 @@ mode: commit
 - `analysis_prompt`：分析提示词。
 - `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果。
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
+- `enable_pre_summary_report`：是否生成分析前报告，默认关闭。开启后且总结模型也开启时，会生成总分析模型分析前和分析后的两份报告。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`*_model_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
@@ -97,7 +98,7 @@ https://github.com/settings/tokens
 
 `max_files_per_report` 和 `max_input_tokens` 默认都是 `0`，表示不限制。
 
-如果其中任意一个设置为大于 `0`，插件会先按文件数估算基础分片数量，再按完整模型输入估算 token。某一次请求超过最大 token 输入时，会在保证文件完整性的前提下继续拆分任务。拆分前仍会优先把同目录、同后缀且文件名相近的改动排在一起。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成一份报告，最终只生成一张图片并推送一次。
+如果其中任意一个设置为大于 `0`，插件会先按文件数估算基础分片数量，再按完整模型输入估算 token。某一次请求超过最大 token 输入时，会在保证文件完整性的前提下继续拆分任务。拆分前仍会优先把同目录、同后缀且文件名相近的改动排在一起。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成报告；默认最终只生成一张图片并推送一次。
 
 插件只在文件边界拆分，不会拆开单个文件 patch。由于要保证文件完整性，实际每个分片的文件数或 token 估算值可能会围绕配置值浮动；如果某个文件本身超过 `max_input_tokens`，它会完整进入某个分片，不会被截断。
 
@@ -112,6 +113,8 @@ https://github.com/settings/tokens
 `enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
 
 开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次总结模型整理最终报告。总结模型只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果总结模型失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
+
+`enable_pre_summary_report` 默认关闭。开启后且 `enable_summary_model` 也开启时，插件会保留总结模型处理前的程序合并报告，并在总结模型处理后再生成最终报告。两份报告都会渲染图片、保存日志；如果配置了群推送，会依次发送两张报告图；如果配置了 `analysis_file_groups`，也会上传两份 `.log` 文件。两份报告的图片和文本里会标注“总分析模型分析前 / 总分析模型分析后”，日志文件名会追加 `_总分析前` 和 `_总分析后`，避免同一版本范围互相覆盖。
 
 如果开启了总结模型，但程序初步合并分片结果时发生异常，插件不会直接中断。本次检查会把各分片的分析 JSON、分片错误信息和原始模型输出文本交给总结模型生成最终报告；如果这一步仍然失败，才会生成需复核的兜底报告。
 
@@ -133,14 +136,14 @@ https://github.com/settings/tokens
 
 `{token_count}` 表示本次实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
 
-配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。
+配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
 
 ## 数据持久化
 
 插件会在 AstrBot 插件数据目录中保存运行数据：
 
-- `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。
-- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
+- `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。启用双报告时，任务状态的 `reports` 会记录每份报告的日志和图片路径，旧的 `log_path`、`image_path` 字段仍指向最终报告。
+- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。启用双报告时，会保存为 `旧版本_新版本_总分析前.log` 和 `旧版本_新版本_总分析后.log`。
 - `errors/`：保存模型请求、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback 和本次 compare/chunk 元数据。
 - `images/`：保存渲染后的报告图片。
 
