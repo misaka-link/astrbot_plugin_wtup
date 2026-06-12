@@ -17,9 +17,10 @@ from .analyzer import (
     fallback_analysis,
     estimate_chunk_input_tokens,
     merge_chunk_analyses,
-    refine_chunk_analyses,
-    refine_merged_analysis,
+    refine_chunk_analyses_with_usage,
+    refine_merged_analysis_with_usage,
     split_chunks_by_token_limit,
+    sum_token_usage,
 )
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import DiffChunk, build_diff_summary, short_sha
@@ -150,17 +151,24 @@ class UpdateCheckService:
 
             logger.warning("[%s] 步骤 5/5: 分析并生成单份报告...", PLUGIN_NAME)
             chunk_results = await analyze_chunks(self.context, self.settings, summary)
+            token_usage = sum_token_usage(result.token_usage for result in chunk_results)
             summary_model_enabled = self.settings.enable_summary_model
             try:
                 analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
-                    analysis = await refine_merged_analysis(self.context, self.settings, summary, analysis)
+                    analysis, summary_usage = await refine_merged_analysis_with_usage(
+                        self.context,
+                        self.settings,
+                        summary,
+                        analysis,
+                    )
+                    token_usage += summary_usage
             except Exception as exc:
                 logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
                 if summary_model_enabled:
                     logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
-                    analysis = await refine_chunk_analyses(
+                    analysis, summary_usage = await refine_chunk_analyses_with_usage(
                         self.context,
                         self.settings,
                         summary,
@@ -168,8 +176,17 @@ class UpdateCheckService:
                         chunk_results,
                         merge_error=str(exc),
                     )
+                    token_usage += summary_usage
                 else:
                     analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
+            token_count = token_usage.total_tokens
+            logger.warning(
+                "[%s] 模型真实 token 消耗: total=%d, prompt=%d, completion=%d",
+                PLUGIN_NAME,
+                token_usage.total_tokens,
+                token_usage.prompt_tokens,
+                token_usage.completion_tokens,
+            )
             report_chunk = DiffChunk(
                 index=1,
                 total=1,
@@ -203,7 +220,7 @@ class UpdateCheckService:
                 if self.settings.enable_push_append_text:
                     append_text = self.runtime.build_push_append_text(
                         analysis=analysis,
-                        token_count=input_token_count,
+                        token_count=token_count,
                         elapsed_minutes=elapsed_minutes,
                         summary_model_enabled=summary_model_enabled,
                     )
@@ -236,6 +253,7 @@ class UpdateCheckService:
                 sent_to_groups=bool(send_to_groups and self.settings.target_groups),
                 sent_count=sent_count,
                 failed_count=failed_count,
+                token_usage=token_usage,
             )
 
             if not manual or send_to_groups:

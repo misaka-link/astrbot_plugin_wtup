@@ -8,9 +8,11 @@ from types import SimpleNamespace
 
 from wtup.analyzer import (
     ChunkAnalysis,
+    TokenUsage,
     analyze_chunks,
     build_chunk_refinement_payload,
     estimate_chunk_input_tokens,
+    extract_token_usage,
     llm_failure_reason,
     merge_chunk_analyses,
     refine_chunk_analyses,
@@ -106,6 +108,30 @@ class AnalyzerMergeTest(unittest.TestCase):
         subtitle = report_update_subtitle(chunk, {"summary": "本次更新包含 1 个提交、3 个文件。"})
 
         self.assertEqual(subtitle, "本次更新包含 1 个提交、3 个文件。")
+
+
+class TokenUsageTest(unittest.TestCase):
+    def test_extract_token_usage_from_astrbot_usage_object(self) -> None:
+        usage = SimpleNamespace(input=12, output=8, total=20)
+        response = SimpleNamespace(usage=usage)
+
+        self.assertEqual(extract_token_usage(response), TokenUsage(prompt_tokens=12, completion_tokens=8, total_tokens=20))
+
+    def test_extract_token_usage_from_openai_usage_dict(self) -> None:
+        response = {
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 5,
+                "total_tokens": 12,
+            }
+        }
+
+        self.assertEqual(extract_token_usage(response), TokenUsage(prompt_tokens=7, completion_tokens=5, total_tokens=12))
+
+    def test_extract_token_usage_fills_total_when_missing(self) -> None:
+        response = {"usage": {"input_tokens": 7, "output_tokens": 5}}
+
+        self.assertEqual(extract_token_usage(response), TokenUsage(prompt_tokens=7, completion_tokens=5, total_tokens=12))
 
 
 class ConfigTest(unittest.TestCase):

@@ -16,11 +16,11 @@ from .client import request_llm
 from .errors import record_model_error
 from .fallback import fallback_analysis
 from .merge import merge_chunk_analyses, order_chunk_results
-from .models import ChunkAnalysis
+from .models import ChunkAnalysis, TokenUsage
 from .normalize import normalize_analysis, parse_analysis_json
 from .prompts import build_chunk_refinement_prompt, build_prompt, build_refinement_prompt
-from .repair import parse_or_repair_analysis
-from .responses import ensure_usable_llm_response, extract_response_text
+from .repair import parse_or_repair_analysis, parse_or_repair_analysis_with_usage
+from .responses import ensure_usable_llm_response, extract_response_text, extract_token_usage
 
 
 async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
@@ -36,18 +36,29 @@ async def refine_merged_analysis(
     summary: DiffSummary,
     merged_analysis: dict[str, Any],
 ) -> dict[str, Any]:
+    analysis, _ = await refine_merged_analysis_with_usage(context, settings, summary, merged_analysis)
+    return analysis
+
+async def refine_merged_analysis_with_usage(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    merged_analysis: dict[str, Any],
+) -> tuple[dict[str, Any], TokenUsage]:
     prompt = build_refinement_prompt(settings, summary, merged_analysis)
+    token_usage = TokenUsage()
     try:
         response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
+        token_usage = extract_token_usage(response)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
-        return parsed
+        return parsed, token_usage
     except Exception as exc:
         record_model_error(settings, "summary_refine_failed", exc, summary=summary)
         logger.warning("[%s] 总结模型分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
-        return normalize_analysis(merged_analysis)
+        return normalize_analysis(merged_analysis), token_usage
 
 async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSummary) -> list[ChunkAnalysis]:
     concurrency = max(1, int(getattr(settings, "model_concurrency", 1) or 1))
@@ -151,7 +162,8 @@ async def analyze_chunk_with_retry_attempt(
 
         retry_errors = "; ".join(result.error for result in retry_results if result.error)
         retry_raw_text = "\n\n".join(result.raw_text for result in retry_results if result.raw_text)
-        return ChunkAnalysis(chunk.index, chunk.total, merged, error=retry_errors, raw_text=retry_raw_text)
+        retry_usage = sum_token_usage(result.token_usage for result in retry_results)
+        return ChunkAnalysis(chunk.index, chunk.total, merged, error=retry_errors, raw_text=retry_raw_text, token_usage=retry_usage)
 
 async def analyze_chunk_without_retry(
     context: Any,
@@ -182,10 +194,18 @@ async def analyze_chunk_once(
     prompt = build_prompt(settings, summary, chunk)
     async with semaphore:
         response = await request_llm(context, settings, prompt)
+    token_usage = extract_token_usage(response)
     ensure_usable_llm_response(response)
     raw_text = extract_response_text(response)
-    analysis = await parse_or_repair_analysis(context, settings, summary, chunk, raw_text, semaphore=semaphore)
-    return ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text)
+    analysis, repair_usage = await parse_or_repair_analysis_with_usage(
+        context,
+        settings,
+        summary,
+        chunk,
+        raw_text,
+        semaphore=semaphore,
+    )
+    return ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text, token_usage=token_usage + repair_usage)
 
 def split_chunk_for_retry(chunk: DiffChunk) -> list[DiffChunk]:
     target_size = max(1, (len(chunk.files) + 1) // 2)
@@ -205,14 +225,35 @@ async def refine_chunk_analyses(
     *,
     merge_error: str = "",
 ) -> dict[str, Any]:
+    analysis, _ = await refine_chunk_analyses_with_usage(
+        context,
+        settings,
+        summary,
+        chunks,
+        results,
+        merge_error=merge_error,
+    )
+    return analysis
+
+async def refine_chunk_analyses_with_usage(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+    *,
+    merge_error: str = "",
+) -> tuple[dict[str, Any], TokenUsage]:
     prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
+    token_usage = TokenUsage()
     try:
         response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
+        token_usage = extract_token_usage(response)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
-        return parsed
+        return parsed, token_usage
     except Exception as exc:
         record_model_error(
             settings,
@@ -222,4 +263,14 @@ async def refine_chunk_analyses(
             extra={"merge_error": merge_error},
         )
         logger.warning("[%s] 分片总结模型分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
-        return fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。")
+        return (
+            fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。"),
+            token_usage,
+        )
+
+def sum_token_usage(usages: Any) -> TokenUsage:
+    total = TokenUsage()
+    for usage in usages:
+        if isinstance(usage, TokenUsage):
+            total += usage
+    return total

@@ -17,6 +17,7 @@ from .merge import (
     unique_preserve_order,
 )
 from .models import ChunkAnalysis
+from .models import TokenUsage
 from .normalize import (
     first_non_empty_line,
     normalize_ai_analysis,
@@ -38,6 +39,7 @@ from .prompts import (
 )
 from .repair import parse_or_repair_analysis
 from .responses import ensure_usable_llm_response, extract_response_text, llm_failure_reason
+from .responses import extract_token_usage
 from .retry import (
     analyze_chunk,
     analyze_chunk_once,
@@ -46,7 +48,10 @@ from .retry import (
     analyze_chunk_without_retry,
     analyze_chunks,
     refine_chunk_analyses,
+    refine_chunk_analyses_with_usage,
     refine_merged_analysis,
+    refine_merged_analysis_with_usage,
+    sum_token_usage,
     split_chunk_for_retry,
 )
 from .tokens import (
@@ -58,6 +63,7 @@ from .tokens import (
 
 __all__ = [
     "ChunkAnalysis",
+    "TokenUsage",
     "analyze_chunk",
     "analyze_chunk_once",
     "analyze_chunk_with_retry",
@@ -76,6 +82,7 @@ __all__ = [
     "estimate_chunk_input_tokens",
     "estimate_input_tokens",
     "extract_response_text",
+    "extract_token_usage",
     "fallback_analysis",
     "file_patch_chars",
     "first_non_empty_line",
@@ -99,10 +106,13 @@ __all__ = [
     "parse_or_repair_analysis",
     "record_model_error",
     "refine_chunk_analyses",
+    "refine_chunk_analyses_with_usage",
     "refine_merged_analysis",
+    "refine_merged_analysis_with_usage",
     "request_llm",
     "safe_normalize_analysis",
     "split_chunk_for_retry",
     "split_chunks_by_token_limit",
+    "sum_token_usage",
     "unique_preserve_order",
 ]

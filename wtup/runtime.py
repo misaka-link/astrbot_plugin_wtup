@@ -154,7 +154,12 @@ class RuntimeState:
         sent_to_groups: bool,
         sent_count: int,
         failed_count: int,
+        token_usage: Any | None = None,
     ) -> None:
+        token_usage_dict = {}
+        to_dict = getattr(token_usage, "to_dict", None)
+        if callable(to_dict):
+            token_usage_dict = to_dict()
         now = time.time()
         task = {
             "repo": REPO_FULL_NAME,
@@ -170,6 +175,7 @@ class RuntimeState:
             "target_groups": list(self.settings.target_groups) if sent_to_groups else [],
             "sent_count": sent_count,
             "failed_count": failed_count,
+            "token_usage": token_usage_dict,
             "generated_at": now,
         }
         updates: dict[str, Any] = {"last_generated_task": task}
