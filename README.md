@@ -2,6 +2,19 @@
 
 AstrBot 的 War Thunder Datamine 更新监控插件。
 
+## 插件展示
+
+<p align="center">
+  <img src="docs/示例图.png" alt="插件报告示例" width="48%">
+  <img src="docs/通知内容.png" alt="通知内容示例" width="32%">
+</p>
+
+<p align="center">
+  <img src="docs/插件后台1.png" alt="插件后台配置 1" width="32%">
+  <img src="docs/后台3.png" alt="插件后台配置 2" width="32%">
+  <img src="docs/保存文件.png" alt="保存文件配置" width="32%">
+</p>
+
 插件固定监控：
 
 ```text
