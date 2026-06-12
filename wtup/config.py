@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 
 PLUGIN_NAME = "astrbot_plugin_wtup"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 REPO_OWNER = "gszabi99"
 REPO_NAME = "War-Thunder-Datamine"
 REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"
@@ -55,6 +55,11 @@ class PluginConfig:
     enable_push_append_text: bool
     push_append_text_template: str
     footer_note: str = DEFAULT_FOOTER_NOTE
+    model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def enable_summary_model(self) -> bool:

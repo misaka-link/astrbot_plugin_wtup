@@ -10,6 +10,8 @@ branch: master
 mode: commit
 ```
 
+感谢仓库 [gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine) 开源贡献的内容。
+
 发现新 commit 后，插件会获取 GitHub compare 数据，把 commit、文件列表和 patch 交给 AstrBot 已配置的大模型分析，然后使用 `templates/help_miku.html` 渲染图片并主动推送到配置的群聊列表。
 
 ## 配置
@@ -111,7 +113,7 @@ https://github.com/settings/tokens
 总结模型:{summary_model}
 ```
 
-配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；其他 `unified_msg_origin` 会兜底发送日志文本。
+配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。
 
 ## 数据持久化
 
@@ -119,6 +121,7 @@ https://github.com/settings/tokens
 
 - `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。
 - `logs/`：保存每次最终文本报告，不再记录图片文件路径。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
+- `errors/`：保存模型请求、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。
 - `images/`：保存渲染后的报告图片。
 
 ## 首次运行

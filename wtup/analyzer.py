@@ -411,6 +411,43 @@ def file_patch_chars(file_info: dict[str, Any]) -> int:
     return len(str(file_info.get("patch") or "")) + len(str(file_info.get("filename") or ""))
 
 
+def record_model_error(
+    settings: PluginConfig,
+    stage: str,
+    error: BaseException | str,
+    *,
+    summary: DiffSummary | None = None,
+    chunk: DiffChunk | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    recorder = getattr(settings, "model_error_recorder", None)
+    if not callable(recorder):
+        return
+    metadata: dict[str, Any] = dict(extra or {})
+    if summary is not None:
+        metadata.update(
+            {
+                "base_sha": summary.base_sha,
+                "head_sha": summary.head_sha,
+                "compare_url": summary.compare_url,
+                "total_files": summary.total_files,
+            }
+        )
+    if chunk is not None:
+        metadata.update(
+            {
+                "chunk_index": chunk.index,
+                "chunk_total": chunk.total,
+                "chunk_files": [str(file_info.get("filename") or "") for file_info in chunk.files],
+                "chunk_patch_chars": chunk.patch_chars,
+            }
+        )
+    try:
+        recorder(stage, error, metadata)
+    except Exception as exc:
+        logger.warning("[%s] 保存模型错误日志失败: %s", PLUGIN_NAME, exc)
+
+
 async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
     response = await request_llm(context, settings, prompt)
     text = extract_response_text(response)
@@ -458,6 +495,7 @@ async def refine_merged_analysis(
             raise ValueError("总结模型输出不是有效 JSON")
         return parsed
     except Exception as exc:
+        record_model_error(settings, "summary_refine_failed", exc, summary=summary)
         logger.warning("[%s] 总结模型分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
         return normalize_analysis(merged_analysis)
 
@@ -497,6 +535,14 @@ async def analyze_chunk_with_retry_attempt(
     except Exception as exc:
         max_retry_count = max(0, int(getattr(settings, "max_retry_count", 2) or 0))
         if len(chunk.files) <= 1 or attempt >= max_retry_count:
+            record_model_error(
+                settings,
+                "chunk_analysis_failed",
+                exc,
+                summary=summary,
+                chunk=chunk,
+                extra={"attempt": attempt, "max_retry_count": max_retry_count},
+            )
             logger.warning(
                 "[%s] 模型分析失败 chunk %d/%d，已重试 %d/%d，无法继续拆分: %s",
                 PLUGIN_NAME,
@@ -514,6 +560,14 @@ async def analyze_chunk_with_retry_attempt(
             )
 
         retry_chunks = split_chunk_for_retry(chunk)
+        record_model_error(
+            settings,
+            "chunk_analysis_retry_split",
+            exc,
+            summary=summary,
+            chunk=chunk,
+            extra={"attempt": attempt + 1, "max_retry_count": max_retry_count, "retry_chunks": len(retry_chunks)},
+        )
         logger.warning(
             "[%s] 模型分析失败 chunk %d/%d，拆分为 %d 个更小请求后重试 (第 %d/%d 次): %s",
             PLUGIN_NAME,
@@ -563,6 +617,7 @@ async def analyze_chunk_without_retry(
     try:
         return await analyze_chunk_once(context, settings, summary, chunk, semaphore)
     except Exception as exc:
+        record_model_error(settings, "chunk_retry_failed", exc, summary=summary, chunk=chunk)
         logger.warning("[%s] 拆分重试仍失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
         return ChunkAnalysis(
             chunk.index,
@@ -614,8 +669,24 @@ async def parse_or_repair_analysis(
         repaired = parse_analysis_json(repair_text)
         if repaired is not None:
             return repaired
+        record_model_error(
+            settings,
+            "json_repair_invalid",
+            "JSON 修复模型请求仍未返回有效 JSON",
+            summary=summary,
+            chunk=chunk,
+            extra={"raw_text": raw_text[:4000], "repair_text": repair_text[:4000]},
+        )
         logger.warning("[%s] JSON 修复模型请求仍未返回有效 JSON chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
     except Exception as exc:
+        record_model_error(
+            settings,
+            "json_repair_failed",
+            exc,
+            summary=summary,
+            chunk=chunk,
+            extra={"raw_text": raw_text[:4000]},
+        )
         logger.warning("[%s] JSON 修复模型请求失败 chunk %d/%d: %s", PLUGIN_NAME, chunk.index, chunk.total, exc)
 
     return fallback_analysis(
@@ -652,6 +723,13 @@ async def refine_chunk_analyses(
             raise ValueError("总结模型输出不是有效 JSON")
         return parsed
     except Exception as exc:
+        record_model_error(
+            settings,
+            "summary_from_chunks_failed",
+            exc,
+            summary=summary,
+            extra={"merge_error": merge_error},
+        )
         logger.warning("[%s] 分片总结模型分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
         return fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。")
 

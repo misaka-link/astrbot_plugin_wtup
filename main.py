@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -102,9 +103,11 @@ class WTUpdatePlugin(Star):
         self.state_store = StateStore(self.data_dir / "state.json")
         self.image_dir = self.data_dir / "images"
         self.log_dir = self.data_dir / "logs"
+        self.error_dir = self.data_dir / "errors"
         self.template_path = Path(__file__).resolve().parent / "templates" / "help_miku.html"
         self._task: asyncio.Task | None = None
         self._check_lock = asyncio.Lock()
+        self.settings = self._with_runtime_hooks(self.settings)
 
     async def initialize(self):
         self._task = asyncio.create_task(self._monitor_loop())
@@ -421,6 +424,36 @@ class WTUpdatePlugin(Star):
                 "branch": BRANCH_NAME,
             }
         )
+
+    def _with_runtime_hooks(self, settings: PluginConfig) -> PluginConfig:
+        try:
+            from dataclasses import replace
+
+            return replace(settings, model_error_recorder=self._record_model_error)
+        except Exception:
+            settings.model_error_recorder = self._record_model_error  # type: ignore[misc]
+            return settings
+
+    def _record_model_error(self, stage: str, error: BaseException | str, metadata: dict[str, Any]) -> None:
+        self.error_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        base_name = f"{now.year}年{now.month}月{now.day}日{now.hour:02d}时{now.minute:02d}分{now.second:02d}秒"
+        output_path = self.error_dir / f"{base_name}.log"
+        suffix = 1
+        while output_path.exists():
+            output_path = self.error_dir / f"{base_name}_{suffix}.log"
+            suffix += 1
+
+        error_text = str(error)
+        payload = {
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "stage": stage,
+            "error_type": type(error).__name__ if isinstance(error, BaseException) else "str",
+            "error": error_text,
+            "metadata": metadata,
+        }
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        warning_log("[%s] 模型报错 stage=%s error=%s 错误日志=%s", PLUGIN_NAME, stage, error_text, output_path)
 
     def _save_report_log(
         self,

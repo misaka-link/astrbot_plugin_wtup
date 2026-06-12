@@ -314,7 +314,6 @@ async def push_log_file(
     success = 0
     failed = 0
     extra_call_targets = await _collect_event_call_targets(event) if event is not None else None
-    fallback_text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
     for target in targets:
         target = str(target).strip()
         if not target:
@@ -328,11 +327,7 @@ async def push_log_file(
                     extra_call_targets=extra_call_targets,
                 )
             else:
-                if not fallback_text:
-                    raise RuntimeError("日志文件不存在或为空")
-                if MessageChain is None:
-                    raise RuntimeError("AstrBot MessageChain is unavailable")
-                await context.send_message(target, MessageChain().message(fallback_text))
+                raise RuntimeError("当前目标不支持文件发送，已跳过日志文件推送")
             success += 1
         except Exception as exc:
             failed += 1
