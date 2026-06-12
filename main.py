@@ -79,6 +79,7 @@ class WTUpdatePlugin(Star):
             log_dir=self.log_dir,
             error_dir=self.error_dir,
             template_path=self.template_path,
+            render_host=self,
         )
         self.settings = self.service.with_runtime_hooks(self.settings)
         self.service.settings = self.settings

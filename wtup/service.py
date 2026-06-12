@@ -41,9 +41,11 @@ class UpdateCheckService:
         log_dir: Path,
         error_dir: Path,
         template_path: Path,
+        render_host: Any | None = None,
     ) -> None:
         self.context = context
         self.settings = settings
+        self.render_host = render_host if render_host is not None else self
         self.state_store = state_store
         self.image_dir = image_dir
         self.log_dir = log_dir
@@ -181,7 +183,7 @@ class UpdateCheckService:
                 analysis,
                 footer_note=self.settings.footer_note,
             )
-            image_path = await render_report_image(self, html_text, self.image_dir)
+            image_path = await render_report_image(self.render_host, html_text, self.image_dir)
             fallback_text = render_plain_text(summary, report_chunk, analysis)
             log_path = self.runtime.save_report_log(summary, analysis, fallback_text)
             elapsed_minutes = ceil_minutes(time.monotonic() - started_at)
