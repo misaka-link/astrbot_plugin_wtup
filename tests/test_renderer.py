@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from wtup.diff_collector import DiffChunk, DiffSummary
-from wtup.renderer import build_report_html, render_footer_note
+from wtup.renderer import build_report_html, render_footer_note, render_plain_text
 
 
 class RendererFooterNoteTest(unittest.TestCase):
@@ -45,6 +45,27 @@ class RendererFooterNoteTest(unittest.TestCase):
 
             self.assertIn(".card { color: red; }", html)
             self.assertNotIn("{{ style_css }}", html)
+
+    def test_render_plain_text_does_not_include_source_url(self) -> None:
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://github.com/example/repo/compare/base...head",
+            total_commits=1,
+            total_files=0,
+            additions=0,
+            deletions=0,
+            changed_files=0,
+            commits=[],
+            files=[],
+            chunks=[],
+        )
+        chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+
+        text = render_plain_text(summary, chunk, {"summary": "摘要", "update_sections": []})
+
+        self.assertNotIn("Source:", text)
+        self.assertNotIn("https://github.com/example/repo/compare/base...head", text)
 
 
 if __name__ == "__main__":

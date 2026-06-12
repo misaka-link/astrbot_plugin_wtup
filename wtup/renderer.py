@@ -125,7 +125,6 @@ def render_plain_text(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str
     recommendation = str(ai_analysis.get("recommendation") or analysis.get("recommendation") or "").strip()
     if recommendation:
         lines.append(f"建议: {recommendation}")
-    lines.extend(["", f"Source: {summary.compare_url or 'GitHub compare API'}"])
     return "\n".join(lines)
 
 

@@ -55,6 +55,7 @@ class PluginConfig:
     max_retry_count: int
     enable_push_append_text: bool
     push_append_text_template: str
+    max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
     model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
         default=None,
@@ -187,6 +188,7 @@ def load_config(config: Any) -> PluginConfig:
         max_input_tokens=max_input_tokens,
         max_input_token_unit=max_input_token_unit,
         max_retry_count=as_int(config_get(config, "max_retry_count", 2), 2, minimum=0),
+        max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
         enable_push_append_text=as_bool(config_get(config, "enable_push_append_text", False)),
         push_append_text_template=str(
             config_get(config, "push_append_text_template", DEFAULT_PUSH_APPEND_TEXT_TEMPLATE)

@@ -10,7 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 from wtup.config import PLUGIN_VERSION
+from wtup.config import load_config
 from wtup.report_log import build_report_log_filename, sanitize_filename
+from wtup.runtime import RuntimeState
+from wtup.state_store import StateStore
 
 
 class ReportLogFilenameTest(unittest.TestCase):
@@ -49,7 +52,29 @@ class ModelErrorLogTest(unittest.TestCase):
             payload = json.loads(files[0].read_text(encoding="utf-8"))
             self.assertEqual(payload["stage"], "chunk_analysis_failed")
             self.assertEqual(payload["error"], "模型爆炸")
+            self.assertIn("RuntimeError: 模型爆炸", payload["traceback"])
             self.assertEqual(payload["metadata"]["chunk_index"], 1)
+
+    def test_runtime_cleanup_keeps_latest_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            target = base / "logs"
+            target.mkdir()
+            for index in range(7):
+                path = target / f"{index}.log"
+                path.write_text(str(index), encoding="utf-8")
+                path.touch()
+
+            runtime = RuntimeState(
+                settings=load_config({"max_saved_artifacts": 5}),
+                state_store=StateStore(base / "state.json"),
+                log_dir=target,
+                error_dir=base / "errors",
+            )
+
+            runtime.cleanup_saved_artifacts(target)
+
+            self.assertEqual(len(list(target.glob("*.log"))), 5)
 
 
 def import_main_with_astrbot_stubs():

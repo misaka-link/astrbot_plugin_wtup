@@ -201,6 +201,7 @@ class UpdateCheckService:
                 footer_note=self.settings.footer_note,
             )
             image_path = await render_report_image(self.render_host, html_text, self.image_dir)
+            self.runtime.cleanup_saved_artifacts(self.image_dir)
             fallback_text = render_plain_text(summary, report_chunk, analysis)
             log_path = self.runtime.save_report_log(summary, analysis, fallback_text)
             elapsed_minutes = ceil_minutes(time.monotonic() - started_at)

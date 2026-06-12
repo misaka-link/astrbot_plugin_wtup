@@ -44,13 +44,14 @@ mode: commit
 - `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果。
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。
-- `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗。
+- `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`*_model_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
 - `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
 - `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制，支持最多两位小数。
 - `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`。
 - `max_retry_count`：最大重试次数，默认 2。每次重试都会把失败任务按文件边界拆成两半。
+- `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/` 目录保留最新 5 个文件；设置为 0 表示不限制。
 
 `github_token` 获取位置：
 
@@ -130,7 +131,7 @@ https://github.com/settings/tokens
 总结模型:{summary_model}
 ```
 
-`{token_count}` 表示本次实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
+`{token_count}` 表示本次实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
 
 配置 `analysis_file_groups` 后，分析推送完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。
 
@@ -139,9 +140,11 @@ https://github.com/settings/tokens
 插件会在 AstrBot 插件数据目录中保存运行数据：
 
 - `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。
-- `logs/`：保存每次最终文本报告，不再记录图片文件路径。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
-- `errors/`：保存模型请求、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。
+- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。
+- `errors/`：保存模型请求、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback 和本次 compare/chunk 元数据。
 - `images/`：保存渲染后的报告图片。
+
+`max_saved_artifacts` 默认会让以上三个目录分别保留最新 5 个文件，超出数量会删除旧文件。
 
 ## 首次运行
 

@@ -115,6 +115,7 @@ class WTUpdatePlugin(Star):
             f"模型请求并发数: {self.settings.model_concurrency}",
             f"总结模型: {'启动' if self.settings.enable_summary_model else '关闭'}",
             f"最大重试次数: {self.settings.max_retry_count}",
+            f"文件保留数量: {self.settings.max_saved_artifacts or '不限制'}",
         ]
         await self._react_to_command_done(event)
         yield event.plain_result("\n".join(lines))

@@ -78,8 +78,11 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 settings=load_config(
                     {
                         "target_groups": ["123"],
+                        "provider_id": "NewAPI-OpenAI/glm-5.1",
+                        "summary_provider_id": "NewApi-OpenAI/gemini-3.5-flash-preview",
                         "enable_push_append_text": True,
-                        "push_append_text_template": "消耗token:{token_count}",
+                        "enable_summary_model": True,
+                        "push_append_text_template": "消耗token:{token_count}\n分析模型:{analysis_model_name}\n总结模型:{summary_model_name}",
                     }
                 ),
                 state_store=state_store,
@@ -123,6 +126,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
+                patch("wtup.service.refine_merged_analysis_with_usage", new=AsyncMock(return_value=(chunk_result.analysis, TokenUsage()))),
                 patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))),
                 patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))) as push_text,
@@ -134,7 +138,10 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
 
                 await service.check_once(manual=True, force_latest=False, send_to_groups=True)
 
-            self.assertEqual(push_text.await_args.kwargs["text"], "消耗token:150")
+            self.assertEqual(
+                push_text.await_args.kwargs["text"],
+                "消耗token:150\n分析模型:glm-5.1\n总结模型:gemini-3.5-flash-preview",
+            )
             task = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")["last_generated_task"]
             self.assertEqual(task["token_usage"]["total_tokens"], 150)
 
