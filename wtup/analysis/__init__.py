@@ -19,11 +19,13 @@ from .merge import (
 from .models import ChunkAnalysis
 from .models import TokenUsage
 from .normalize import (
+    clean_pagination_text,
     first_non_empty_line,
     normalize_ai_analysis,
     normalize_analysis,
     normalize_importance,
     normalize_list,
+    normalize_tool_calls,
     normalize_update_items,
     normalize_update_sections,
     parse_analysis_json,
@@ -35,6 +37,7 @@ from .prompts import (
     build_json_repair_prompt,
     build_prompt,
     build_refinement_prompt,
+    build_tool_refinement_prompt,
     json_safe,
 )
 from .repair import parse_or_repair_analysis
@@ -60,6 +63,7 @@ from .tokens import (
     file_patch_chars,
     split_chunks_by_token_limit,
 )
+from .tools import execute_tool_calls
 
 __all__ = [
     "ChunkAnalysis",
@@ -75,7 +79,9 @@ __all__ = [
     "build_json_repair_prompt",
     "build_prompt",
     "build_refinement_prompt",
+    "build_tool_refinement_prompt",
     "clean_section_title",
+    "clean_pagination_text",
     "coerce_analysis",
     "dedupe_update_items",
     "ensure_usable_llm_response",
@@ -83,6 +89,7 @@ __all__ = [
     "estimate_input_tokens",
     "extract_response_text",
     "extract_token_usage",
+    "execute_tool_calls",
     "fallback_analysis",
     "file_patch_chars",
     "first_non_empty_line",
@@ -99,6 +106,7 @@ __all__ = [
     "normalize_analysis",
     "normalize_importance",
     "normalize_list",
+    "normalize_tool_calls",
     "normalize_update_items",
     "normalize_update_sections",
     "order_chunk_results",

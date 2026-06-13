@@ -94,6 +94,37 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertEqual(parsed["update_sections"][0]["title"], "其他变化")
         self.assertIn("模型输出格式未按 JSON 返回", parsed["ai_analysis"]["uncertainties"][0])
 
+    def test_model_json_normalization_rewrites_pagination_context(self) -> None:
+        parsed = safe_normalize_analysis(
+            json_response(
+                {
+                    "report_title": "2.56.0.38->2.56.0.39",
+                    "summary": "本批diff缺少具体参数",
+                    "importance": "中",
+                    "update_sections": [
+                        {
+                            "title": "参数调整",
+                            "items": [{"text": "当前分片未提供完整参数", "children": []}],
+                        }
+                    ],
+                    "ai_analysis": {
+                        "changed_content": ["本分片包含参数调整"],
+                        "player_impact": ["该分片显示影响待确认"],
+                        "uncertainties": ["当前批次信息不足"],
+                        "recommendation": "建议结合本批次后续 diff 复核",
+                    },
+                    "tags": ["参数调整"],
+                }
+            )
+        )
+
+        self.assertEqual(parsed["summary"], "本次 diff 缺少具体参数")
+        self.assertEqual(parsed["update_sections"][0]["items"][0]["text"], "本次 diff 未提供完整参数")
+        self.assertEqual(parsed["ai_analysis"]["changed_content"], ["本次 diff 包含参数调整"])
+        self.assertEqual(parsed["ai_analysis"]["player_impact"], ["本次 diff 显示影响待确认"])
+        self.assertEqual(parsed["ai_analysis"]["uncertainties"], ["本次 diff 信息不足"])
+        self.assertEqual(parsed["recommendation"], "建议结合本次 diff 后续 diff 复核")
+
     def test_merge_cleans_pagination_section_titles(self) -> None:
         summary = make_summary()
         results = [
@@ -106,6 +137,18 @@ class AnalyzerMergeTest(unittest.TestCase):
 
         titles = [section["title"] for section in merged["update_sections"]]
         self.assertEqual(titles, ["其他变化", "经济调整"])
+
+    def test_merge_rewrites_pagination_context_in_items_and_uncertainties(self) -> None:
+        summary = make_summary()
+        payload = analysis("参数调整", "具体参数未在本批diff中出现")
+        payload["ai_analysis"]["uncertainties"] = ["当前分片缺少参数，需要复核"]
+
+        merged = merge_chunk_analyses(summary, summary.chunks[:1], [ChunkAnalysis(1, 1, payload)])
+
+        item_text = merged["update_sections"][0]["items"][0]["text"]
+        uncertainties = merged["ai_analysis"]["uncertainties"]
+        self.assertEqual(item_text, "具体参数未在本次 diff 中出现")
+        self.assertEqual(uncertainties, ["本次 diff 缺少参数，需要复核"])
 
     def test_final_report_subtitle_has_no_part_label(self) -> None:
         chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
@@ -752,20 +795,163 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_json_triggers_repair_request(self) -> None:
         summary = make_summary()
+        summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
         context = SequenceContext(
             [
                 "不是 JSON",
-                json_response(analysis("武器调整", "第二项")),
-                json_response(analysis("武器调整", "第三项")),
                 json_response(analysis("武器调整", "修复后的条目")),
             ]
         )
 
         results = await analyze_chunks(context, make_settings(model_concurrency=1), summary)
 
-        self.assertEqual(context.calls, 4)
+        self.assertEqual(context.calls, 2)
         self.assertEqual(results[0].analysis["summary"], "修复后的条目")
-        self.assertIn("上一次模型分析返回的内容不是有效 JSON", context.prompts[3])
+        self.assertIn("上一次模型分析返回的内容不是有效 JSON", context.prompts[1])
+
+    async def test_tool_calls_are_ignored_when_disabled(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        payload = analysis("武器调整", "初次分析")
+        payload["tool_calls"] = [{"tool": "read_changed_patch", "path": "b.blkx", "reason": "需要更多上下文"}]
+        context = SequenceContext([json_response(payload)])
+
+        results = await analyze_chunks(context, load_config({}), single_summary)
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(results[0].analysis["summary"], "初次分析")
+
+    async def test_tool_calls_refine_chunk_with_local_patch(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = analysis("武器调整", "初次分析")
+        first["tool_calls"] = [{"tool": "read_changed_patch", "path": "b.blkx", "reason": "查看 b 文件 patch"}]
+        context = SequenceContext(
+            [
+                json_response(first),
+                json_response(analysis("武器调整", "补充后分析")),
+            ]
+        )
+        events: list[tuple[str, dict]] = []
+        settings = replace(
+            load_config(
+                {
+                    "enable_model_tool_calls": True,
+                    "max_tool_call_rounds": 1,
+                    "max_tool_calls_per_round": 2,
+                }
+            ),
+            task_log_recorder=lambda event, metadata: events.append((event, metadata)) or len(events),
+        )
+
+        results = await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(context.calls, 2)
+        self.assertEqual(results[0].analysis["summary"], "补充后分析")
+        self.assertIn("模型工具调用协议", context.prompts[0])
+        self.assertIn("工具结果", context.prompts[1])
+        self.assertIn("b.blkx", context.prompts[1])
+        self.assertIn("+b", context.prompts[1])
+        self.assertIn("补充上下文分析", [metadata.get("用途") for event, metadata in events if event == "模型请求开始"])
+        self.assertIn("模型工具调用", [event for event, _metadata in events])
+
+    async def test_read_changed_file_fetches_github_when_local_content_missing(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = analysis("武器调整", "初次分析")
+        first["tool_calls"] = [
+            {"tool": "read_changed_file", "path": "extra/foo.blkx", "reason": "需要完整文件"}
+        ]
+        context = SequenceContext(
+            [
+                json_response(first),
+                json_response(analysis("武器调整", "GitHub 补充后分析")),
+            ]
+        )
+        settings = load_config({"enable_model_tool_calls": True, "max_tool_call_rounds": 1})
+
+        with patch("wtup.analysis.tools.GitHubClient.get_file_text", return_value="FULL FILE CONTENT") as fetch:
+            results = await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(results[0].analysis["summary"], "GitHub 补充后分析")
+        fetch.assert_called_once_with("gszabi99/War-Thunder-Datamine", "head456", "extra/foo.blkx")
+        self.assertIn("FULL FILE CONTENT", context.prompts[1])
+
+    async def test_tool_call_round_limit_adds_uncertainty(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = analysis("武器调整", "初次分析")
+        first["tool_calls"] = [{"tool": "read_changed_patch", "path": "b.blkx", "reason": "第一次补充"}]
+        second = analysis("武器调整", "仍需补充")
+        second["tool_calls"] = [{"tool": "read_changed_patch", "path": "c.blkx", "reason": "还需要补充"}]
+        context = SequenceContext([json_response(first), json_response(second)])
+        settings = load_config({"enable_model_tool_calls": True, "max_tool_call_rounds": 1})
+
+        results = await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(context.calls, 2)
+        self.assertEqual(results[0].analysis["tool_calls"], [])
+        self.assertIn("模型工具调用轮数已达上限", results[0].analysis["ai_analysis"]["uncertainties"][0])
 
     async def test_llm_empty_output_failure_splits_chunk_and_retries_once(self) -> None:
         files = [
@@ -863,6 +1049,33 @@ class AnalyzerUtilityTest(unittest.TestCase):
 
         self.assertEqual(ordered_filenames, ["units/tank_1.blkx", "units/tank_2.blkx", "weapons/gun.blkx"])
 
+    def test_split_files_packs_related_directory_groups_before_other_files(self) -> None:
+        files = [
+            {"filename": "units/tank_1.blkx", "patch": "+a"},
+            {"filename": "weapons/gun.blkx", "patch": "+b"},
+            {"filename": "units/tank_2.blkx", "patch": "+c"},
+            {"filename": "units/plane.blkx", "patch": "+d"},
+        ]
+        chunks = split_files(files, max_files=2)
+
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in chunks],
+            [["units/tank_1.blkx", "units/tank_2.blkx"], ["units/plane.blkx", "weapons/gun.blkx"]],
+        )
+
+    def test_split_files_groups_same_entity_across_directories(self) -> None:
+        files = [
+            {"filename": "data/entity_alpha.blkx", "patch": "+a"},
+            {"filename": "units/plane.blkx", "patch": "+b"},
+            {"filename": "lang/entity_alpha.csv", "patch": "+c"},
+        ]
+        chunks = split_files(files, max_files=2)
+
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in chunks],
+            [["data/entity_alpha.blkx", "lang/entity_alpha.csv"], ["units/plane.blkx"]],
+        )
+
     def test_split_files_applies_file_count_as_hard_limit(self) -> None:
         files = [
             {"filename": "a", "patch": "a" * 100},
@@ -959,6 +1172,43 @@ class AnalyzerUtilityTest(unittest.TestCase):
             [["a.blkx", "b.blkx"], ["c.blkx"], ["d.blkx"]],
         )
         self.assertTrue(all(len(chunk.files) <= 3 for chunk in split_summary.chunks))
+
+    def test_token_limit_splits_on_related_group_boundaries_first(self) -> None:
+        files = [
+            {"filename": "units/tank_1.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "weapons/gun.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+            {"filename": "units/tank_2.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+c"},
+            {"filename": "units/plane.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+d"},
+        ]
+        base_chunks = split_files(files)
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=len(files),
+            additions=4,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=base_chunks,
+        )
+        settings = SimpleNamespace(max_input_token_limit=250)
+
+        with patch(
+            "wtup.analysis.tokens.estimate_chunk_input_tokens",
+            side_effect=lambda _settings, _summary, chunk: len(chunk.files) * 100,
+        ):
+            split_summary = split_chunks_by_token_limit(settings, summary)
+
+        self.assertEqual(
+            [[file["filename"] for file in chunk.files] for chunk in split_summary.chunks],
+            [
+                ["units/tank_1.blkx", "units/tank_2.blkx"],
+                ["units/plane.blkx", "weapons/gun.blkx"],
+            ],
+        )
 
 
 def json_response(payload: dict) -> str:

@@ -14,7 +14,7 @@ from ..config import PLUGIN_NAME
 from ..diff_collector import DiffChunk, DiffSummary
 from .fallback import fallback_analysis
 from .models import ChunkAnalysis
-from .normalize import normalize_analysis, normalize_importance, normalize_update_items
+from .normalize import clean_pagination_text, normalize_analysis, normalize_importance, normalize_update_items
 
 
 def merge_chunk_analyses(
@@ -31,17 +31,17 @@ def merge_chunk_analyses(
     update_sections = merge_update_sections(analyses)
 
     changed_content = unique_preserve_order(
-        item
+        clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("changed_content", [])
     )[:10]
     player_impact = unique_preserve_order(
-        item
+        clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("player_impact", [])
     )[:10]
     uncertainties = unique_preserve_order(
-        item
+        clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("uncertainties", [])
     )[:10]
@@ -132,7 +132,7 @@ def dedupe_update_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for item in items:
-        text = str(item.get("text") or "").strip() if isinstance(item, dict) else ""
+        text = clean_pagination_text(item.get("text")) if isinstance(item, dict) else ""
         if not text or text in seen:
             continue
         seen.add(text)

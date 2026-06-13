@@ -16,6 +16,36 @@ def _analysis_prompt_text(settings: PluginConfig) -> str:
 def _summary_prompt_text(settings: PluginConfig) -> str:
     return str(settings.effective_summary_prompt or "").strip()
 
+def _tool_protocol_text(settings: PluginConfig, *, remaining_rounds: int | None = None) -> str:
+    if not getattr(settings, "enable_model_tool_calls", False):
+        return ""
+
+    remaining_text = ""
+    if remaining_rounds is not None:
+        remaining_text = f"\n本分片剩余工具调用轮数: {max(0, remaining_rounds)}"
+    custom_prompt = str(getattr(settings, "tool_call_prompt", "") or "").strip()
+    return f"""
+
+模型工具调用协议：
+{custom_prompt}
+如果当前上下文不足以完成判断，可以在最终 JSON 顶层额外输出 tool_calls 数组；插件会校验后代为执行，并把结果放入下一轮补充上下文分析。
+支持的工具：
+- read_changed_patch: 读取本次 diff 中某个文件的 patch。需要 path。
+- read_changed_file: 读取目标提交下某个文件的完整文本；如果本地 diff 索引没有完整内容，插件允许额外从 GitHub 拉取。需要 path。
+- search_changed_files: 在本次变更文件名和 patch 中搜索关键词。需要 query。
+- list_related_files: 按 path 或 query 列出本次 diff 中可能相关的变更文件。
+tool_calls 示例：
+[
+  {{
+    "tool": "read_changed_file",
+    "path": "aces.vromfs.bin_u/gamedata/flightmodels/f_14d.blkx",
+    "query": "",
+    "reason": "需要确认挂载配置的完整上下文"
+  }}
+]
+如果不需要补充上下文，请省略 tool_calls 或输出空数组。不要为了普通概括请求工具。{remaining_text}
+""".rstrip()
+
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
     return f"""
 {_analysis_prompt_text(settings)}
@@ -69,8 +99,10 @@ JSON 字段如下：
 8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
 9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加 Part、分片、说明文字或其他内容。
 10. summary 会显示在标题下面的小字行，可以写描述性标题；不要把描述性标题写进 report_title。
-11. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
-12. 当前是内部模型请求第 {chunk.index}/{chunk.total} 批；该信息只用于你理解输入范围，最终报告会由程序合并，不要输出批次信息。
+11. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+12. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
+13. 当前是内部模型请求第 {chunk.index}/{chunk.total} 批；该信息只用于你理解输入范围，最终报告会由程序合并，不要输出批次信息。
+{_tool_protocol_text(settings, remaining_rounds=getattr(settings, "max_tool_call_rounds", 0))}
 
 以下是 GitHub 变更数据：
 
@@ -124,7 +156,8 @@ JSON 字段如下：
 1. 用中文。
 2. 只能使用上次模型原始输出和文件列表中已有的信息，不要新增未经输入支持的内容。
 3. 如果上次输出无法判断实际改动，生成需复核条目，并把原因写入 uncertainties。
-4. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
+4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+5. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 当前分片: {chunk.index}/{chunk.total}
@@ -133,6 +166,56 @@ JSON 字段如下：
 
 上次模型原始输出:
 {str(raw_text or "").strip()[:8000]}
+""".strip()
+
+def build_tool_refinement_prompt(
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    previous_analysis: dict[str, Any],
+    tool_results: list[dict[str, Any]],
+    *,
+    round_index: int,
+    remaining_rounds: int,
+) -> str:
+    previous_json = json.dumps(normalize_analysis(previous_analysis), ensure_ascii=False, indent=2)
+    results_json = json.dumps(tool_results, ensure_ascii=False, indent=2)
+    files = "\n".join(f"- {file_info.get('filename') or ''}" for file_info in chunk.files)
+    return f"""
+{_analysis_prompt_text(settings)}
+
+你正在继续分析固定仓库 gszabi99/War-Thunder-Datamine 的 commit 更新。
+上一次模型输出了 tool_calls，插件已经按规则执行工具，并返回补充上下文。
+请基于“上次分析 JSON”和“工具结果”输出修订后的严格 JSON。
+
+输出协议：
+1. 只能输出一个 JSON object。
+2. 不要输出 Markdown 代码块。
+3. 不要输出解释、前言、后记。
+4. JSON 必须能被 json.loads 直接解析。
+5. 所有字符串必须使用双引号。
+6. 不允许尾随逗号。
+7. 不确定的信息写入 uncertainties，不要编造。
+
+要求：
+1. 用中文。
+2. 只能使用上次分析 JSON、当前分片文件列表和工具结果中已有的信息。
+3. 如果工具结果被拒绝、未找到、截断或 GitHub 拉取失败，要把影响写入 uncertainties。
+4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+5. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
+{_tool_protocol_text(settings, remaining_rounds=remaining_rounds)}
+
+提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
+当前分片: {chunk.index}/{chunk.total}
+工具调用轮次: {round_index}
+当前分片文件:
+{files}
+
+上次分析 JSON:
+{previous_json}
+
+工具结果:
+{results_json}
 """.strip()
 
 def build_refinement_prompt(settings: PluginConfig, summary: DiffSummary, merged_analysis: dict[str, Any]) -> str:
@@ -187,10 +270,11 @@ JSON 字段如下：
 3. 去重重复条目，合并含义相近的条目。
 4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
 5. update_sections 使用中文标题，并保留条目层级。
-6. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
-7. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
-8. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
-9. 如果初步合并 JSON 中有分析失败或信息不足的内容，要保留到 uncertainties。
+6. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+7. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
+8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
+9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
+10. 如果初步合并 JSON 中有分析失败或信息不足的内容，要保留到 uncertainties。
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 提交数: {summary.total_commits}
@@ -262,10 +346,11 @@ JSON 字段如下：
 3. 去重重复条目，合并含义相近的条目。
 4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
 5. update_sections 使用中文标题，并保留条目层级。
-6. 不要在 report_title、summary、update_sections.title 或正文条目中写 Part、分片、第几批等分页信息。
-7. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
-8. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
-9. 程序合并失败原因和分片分析失败信息必须保留到 uncertainties。
+6. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+7. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
+8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
+9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
+10. 程序合并失败原因和分片分析失败信息必须保留到 uncertainties。
 
 分片分析数据:
 {chunk_json}

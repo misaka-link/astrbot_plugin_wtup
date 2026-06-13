@@ -18,17 +18,26 @@ from .fallback import fallback_analysis
 from .merge import merge_chunk_analyses, order_chunk_results
 from .models import ChunkAnalysis, TokenUsage
 from .normalize import normalize_analysis, parse_analysis_json
-from .prompts import build_chunk_refinement_prompt, build_prompt, build_refinement_prompt
+from .prompts import build_chunk_refinement_prompt, build_prompt, build_refinement_prompt, build_tool_refinement_prompt
 from .repair import parse_or_repair_analysis, parse_or_repair_analysis_with_usage
 from .responses import ensure_usable_llm_response, extract_response_text, extract_token_usage
+from .tools import execute_tool_calls
 
 
 async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
     prompt = build_prompt(settings, summary, chunk)
-    response = await request_llm(context, settings, prompt)
+    response = await request_llm(context, settings, prompt, summary=summary, chunk=chunk, purpose="分片分析")
     ensure_usable_llm_response(response)
     raw_text = extract_response_text(response)
-    return await parse_or_repair_analysis(context, settings, summary, chunk, raw_text)
+    analysis = await parse_or_repair_analysis(context, settings, summary, chunk, raw_text)
+    analysis, _usage, _raw_texts = await refine_analysis_with_tool_calls(
+        context,
+        settings,
+        summary,
+        chunk,
+        analysis,
+    )
+    return analysis
 
 async def refine_merged_analysis(
     context: Any,
@@ -48,7 +57,14 @@ async def refine_merged_analysis_with_usage(
     prompt = build_refinement_prompt(settings, summary, merged_analysis)
     token_usage = TokenUsage()
     try:
-        response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
+        response = await request_llm(
+            context,
+            settings,
+            prompt,
+            provider_id=settings.effective_summary_provider_id,
+            summary=summary,
+            purpose="程序合并后总结",
+        )
         token_usage = extract_token_usage(response)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)
@@ -279,6 +295,7 @@ async def analyze_chunk_once(
             allow_fallback=False,
             summary=summary,
             chunk=chunk,
+            purpose="分片分析",
         )
     token_usage = extract_token_usage(response)
     ensure_usable_llm_response(response)
@@ -290,8 +307,131 @@ async def analyze_chunk_once(
         chunk,
         raw_text,
         semaphore=semaphore,
+        purpose="JSON 修复",
     )
-    return ChunkAnalysis(chunk.index, chunk.total, analysis, raw_text=raw_text, token_usage=token_usage + repair_usage)
+    analysis, tool_usage, tool_raw_texts = await refine_analysis_with_tool_calls(
+        context,
+        settings,
+        summary,
+        chunk,
+        analysis,
+        semaphore=semaphore,
+        provider_id=provider_id,
+    )
+    combined_raw_text = "\n\n".join([raw_text, *tool_raw_texts]).strip()
+    return ChunkAnalysis(
+        chunk.index,
+        chunk.total,
+        analysis,
+        raw_text=combined_raw_text,
+        token_usage=token_usage + repair_usage + tool_usage,
+    )
+
+async def refine_analysis_with_tool_calls(
+    context: Any,
+    settings: PluginConfig,
+    summary: DiffSummary,
+    chunk: DiffChunk,
+    analysis: dict[str, Any],
+    *,
+    semaphore: asyncio.Semaphore | None = None,
+    provider_id: str | None = None,
+) -> tuple[dict[str, Any], TokenUsage, list[str]]:
+    if not getattr(settings, "enable_model_tool_calls", False):
+        return analysis, TokenUsage(), []
+
+    max_rounds = max(0, int(getattr(settings, "max_tool_call_rounds", 0) or 0))
+    if max_rounds <= 0:
+        return analysis, TokenUsage(), []
+
+    usage = TokenUsage()
+    raw_texts: list[str] = []
+    github_file_cache: dict[str, str] = {}
+    current_analysis = analysis
+
+    for round_index in range(1, max_rounds + 1):
+        tool_calls = current_analysis.get("tool_calls") if isinstance(current_analysis, dict) else []
+        if not isinstance(tool_calls, list) or not tool_calls:
+            break
+
+        tool_results = await execute_tool_calls(
+            settings,
+            summary,
+            chunk,
+            tool_calls,
+            round_index=round_index,
+            github_file_cache=github_file_cache,
+        )
+        prompt = build_tool_refinement_prompt(
+            settings,
+            summary,
+            chunk,
+            current_analysis,
+            tool_results,
+            round_index=round_index,
+            remaining_rounds=max_rounds - round_index,
+        )
+
+        if semaphore is None:
+            response = await request_llm(
+                context,
+                settings,
+                prompt,
+                provider_id=provider_id,
+                allow_fallback=False if provider_id is not None else True,
+                summary=summary,
+                chunk=chunk,
+                purpose="补充上下文分析",
+            )
+        else:
+            async with semaphore:
+                response = await request_llm(
+                    context,
+                    settings,
+                    prompt,
+                    provider_id=provider_id,
+                    allow_fallback=False if provider_id is not None else True,
+                    summary=summary,
+                    chunk=chunk,
+                    purpose="补充上下文分析",
+                )
+        usage += extract_token_usage(response)
+        ensure_usable_llm_response(response)
+        raw_text = extract_response_text(response)
+        raw_texts.append(raw_text)
+        parsed, repair_usage = await parse_or_repair_analysis_with_usage(
+            context,
+            settings,
+            summary,
+            chunk,
+            raw_text,
+            semaphore=semaphore,
+            purpose="补充上下文分析 JSON 修复",
+        )
+        usage += repair_usage
+        current_analysis = parsed
+
+    if _has_tool_calls(current_analysis):
+        current_analysis = _append_tool_limit_uncertainty(current_analysis)
+
+    return current_analysis, usage, raw_texts
+
+def _has_tool_calls(analysis: dict[str, Any]) -> bool:
+    tool_calls = analysis.get("tool_calls") if isinstance(analysis, dict) else []
+    return isinstance(tool_calls, list) and bool(tool_calls)
+
+def _append_tool_limit_uncertainty(analysis: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(analysis)
+    ai_analysis = updated.get("ai_analysis") if isinstance(updated.get("ai_analysis"), dict) else {}
+    updated_ai = dict(ai_analysis)
+    uncertainties = list(updated_ai.get("uncertainties") or [])
+    message = "模型工具调用轮数已达上限，仍缺少的补充上下文需要人工复核。"
+    if message not in uncertainties:
+        uncertainties.append(message)
+    updated_ai["uncertainties"] = uncertainties
+    updated["ai_analysis"] = updated_ai
+    updated["tool_calls"] = []
+    return normalize_analysis(updated)
 
 def split_chunk_for_retry(chunk: DiffChunk) -> list[DiffChunk]:
     target_size = max(1, (len(chunk.files) + 1) // 2)
@@ -363,7 +503,14 @@ async def refine_chunk_analyses_with_usage(
     prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
     token_usage = TokenUsage()
     try:
-        response = await request_llm(context, settings, prompt, provider_id=settings.effective_summary_provider_id)
+        response = await request_llm(
+            context,
+            settings,
+            prompt,
+            provider_id=settings.effective_summary_provider_id,
+            summary=summary,
+            purpose="分片结果总结",
+        )
         token_usage = extract_token_usage(response)
         text = extract_response_text(response)
         parsed = parse_analysis_json(text)

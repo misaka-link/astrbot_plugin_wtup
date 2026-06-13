@@ -10,7 +10,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME, PluginConfig
-from ..diff_collector import DiffChunk, DiffSummary
+from ..diff_collector import DiffChunk, DiffSummary, group_related_files
 from .prompts import build_prompt
 
 
@@ -82,6 +82,14 @@ def _split_file_group_by_token_limit(
     if estimate_chunk_input_tokens(settings, summary, probe) <= limit:
         return [files]
 
+    related_groups = group_related_files(files)
+    if len(related_groups) > 1:
+        midpoint = _best_related_group_split_index(related_groups)
+        return [
+            *_split_file_group_by_token_limit(settings, summary, _flatten_related_groups(related_groups[:midpoint]), limit),
+            *_split_file_group_by_token_limit(settings, summary, _flatten_related_groups(related_groups[midpoint:]), limit),
+        ]
+
     midpoint = (len(files) + 1) // 2
     return [
         *_split_file_group_by_token_limit(settings, summary, files[:midpoint], limit),
@@ -90,3 +98,24 @@ def _split_file_group_by_token_limit(
 
 def file_patch_chars(file_info: dict[str, Any]) -> int:
     return len(str(file_info.get("patch") or "")) + len(str(file_info.get("filename") or ""))
+
+def _best_related_group_split_index(groups: list[list[dict[str, Any]]]) -> int:
+    max_index = len(groups) - 1
+    best_index = 1
+    best_distance = float("inf")
+    target_chars = sum(_file_group_patch_chars(group) for group in groups) / 2
+    running_chars = 0
+
+    for index in range(1, max_index + 1):
+        running_chars += _file_group_patch_chars(groups[index - 1])
+        distance = abs(running_chars - target_chars)
+        if distance <= best_distance:
+            best_index = index
+            best_distance = distance
+    return best_index
+
+def _file_group_patch_chars(group: list[dict[str, Any]]) -> int:
+    return sum(file_patch_chars(file_info) for file_info in group)
+
+def _flatten_related_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    return [file_info for group in groups for file_info in group]

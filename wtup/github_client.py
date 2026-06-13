@@ -62,6 +62,15 @@ class GitHubClient:
         url = f"https://github.com/{repo}/compare/{base}...{head}.diff"
         return self._request_text(url, accept="text/plain")
 
+    def get_file_text(self, repo: str, ref: str, path: str) -> str:
+        safe_path = urllib.parse.quote(str(path or "").strip().lstrip("/"), safe="/")
+        safe_ref = urllib.parse.quote(str(ref or "").strip(), safe="")
+        url = f"{GITHUB_API_BASE}/repos/{repo}/contents/{safe_path}?ref={safe_ref}"
+        _logger.warning("[%s] API 请求: /repos/%s/contents/%s?ref=%s", PLUGIN_NAME, repo, safe_path, safe_ref)
+        text = self._request_text(url, accept="application/vnd.github.raw")
+        _logger.warning("[%s] API 请求完成: /repos/%s/contents/%s?ref=%s", PLUGIN_NAME, repo, safe_path, safe_ref)
+        return text
+
     def _request_json(self, path: str) -> dict[str, Any]:
         url = f"{GITHUB_API_BASE}{path}"
         _logger.warning("[%s] API 请求: %s", PLUGIN_NAME, path)

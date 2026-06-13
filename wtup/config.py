@@ -34,6 +34,11 @@ DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
     "分析模型:{analysis_model}\n"
     "总结模型:{summary_model}"
 )
+DEFAULT_TOOL_CALL_PROMPT = (
+    "当当前分片不足以判断关联挂载、完整参数或同名配置时，可以通过 tool_calls 申请补充上下文。"
+    "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch、read_changed_file、search_changed_files、list_related_files。"
+    "不要请求无关路径，不要为了普通概括请求工具。"
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,11 @@ class PluginConfig:
     max_retry_count: int
     enable_push_append_text: bool
     push_append_text_template: str
+    enable_model_tool_calls: bool = False
+    max_tool_call_rounds: int = 2
+    max_tool_calls_per_round: int = 5
+    max_tool_result_chars: int = 12000
+    tool_call_prompt: str = DEFAULT_TOOL_CALL_PROMPT
     enable_pre_summary_report: bool = False
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
@@ -220,6 +230,14 @@ def load_config(config: Any) -> PluginConfig:
         max_input_tokens=max_input_tokens,
         max_input_token_unit=max_input_token_unit,
         max_retry_count=as_int(config_get(config, "max_retry_count", 2), 2, minimum=0),
+        enable_model_tool_calls=as_bool(config_get(config, "enable_model_tool_calls", False)),
+        max_tool_call_rounds=as_int(config_get(config, "max_tool_call_rounds", 2), 2, minimum=0),
+        max_tool_calls_per_round=as_int(config_get(config, "max_tool_calls_per_round", 5), 5, minimum=1),
+        max_tool_result_chars=as_int(config_get(config, "max_tool_result_chars", 12000), 12000, minimum=1000),
+        tool_call_prompt=str(
+            config_get(config, "tool_call_prompt", DEFAULT_TOOL_CALL_PROMPT)
+            or DEFAULT_TOOL_CALL_PROMPT
+        ),
         max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
         enable_push_append_text=as_bool(config_get(config, "enable_push_append_text", False)),
         push_append_text_template=str(

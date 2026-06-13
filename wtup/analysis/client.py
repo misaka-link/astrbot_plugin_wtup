@@ -20,7 +20,7 @@ from .tokens import estimate_input_tokens
 
 
 async def generate_analysis_from_prompt(context: Any, settings: PluginConfig, prompt: str) -> dict[str, Any]:
-    response = await request_llm(context, settings, prompt)
+    response = await request_llm(context, settings, prompt, purpose="单次提示词分析")
     text = extract_response_text(response)
     return safe_normalize_analysis(text)
 
@@ -34,6 +34,7 @@ async def request_llm(
     allow_fallback: bool = True,
     summary: Any | None = None,
     chunk: Any | None = None,
+    purpose: str = "模型请求",
 ) -> Any:
     if not allow_fallback:
         return await _request_llm_with_provider(
@@ -46,6 +47,7 @@ async def request_llm(
             allow_fallback=False,
             summary=summary,
             chunk=chunk,
+            purpose=purpose,
         )
 
     provider_ids = request_provider_ids(settings, provider_id)
@@ -63,6 +65,7 @@ async def request_llm(
                 allow_fallback=True,
                 summary=summary,
                 chunk=chunk,
+                purpose=purpose,
             )
         except Exception as exc:
             last_error = exc
@@ -89,6 +92,7 @@ async def request_llm(
         allow_fallback=False,
         summary=summary,
         chunk=chunk,
+        purpose=purpose,
     )
 
 
@@ -103,12 +107,14 @@ async def _request_llm_with_provider(
     allow_fallback: bool,
     summary: Any | None,
     chunk: Any | None,
+    purpose: str,
 ) -> Any:
     normalized_provider_id = str(provider_id or "").strip()
     request_no = _record_task_log(
         settings,
         "模型请求开始",
         {
+            "用途": purpose,
             "Provider": provider_label(normalized_provider_id),
             "Provider序号": f"{provider_index}/{provider_total}",
             "允许备用模型": "是" if allow_fallback else "否",
@@ -134,12 +140,14 @@ async def _request_llm_with_provider(
                 allow_fallback=allow_fallback,
                 summary=summary,
                 chunk=chunk,
+                purpose=purpose,
             )
             _record_task_log(
                 settings,
                 "模型请求失败",
                 {
                     "第几次模型请求": request_no,
+                    "用途": purpose,
                     "Provider": provider_label(normalized_provider_id),
                     "耗时秒": f"{time.monotonic() - started_at:.2f}",
                     "错误": str(wrapped),
@@ -158,12 +166,14 @@ async def _request_llm_with_provider(
                 allow_fallback=allow_fallback,
                 summary=summary,
                 chunk=chunk,
+                purpose=purpose,
             )
             _record_task_log(
                 settings,
                 "模型请求失败",
                 {
                     "第几次模型请求": request_no,
+                    "用途": purpose,
                     "Provider": provider_label(normalized_provider_id),
                     "耗时秒": f"{time.monotonic() - started_at:.2f}",
                     "错误": str(exc),
@@ -180,6 +190,7 @@ async def _request_llm_with_provider(
             "模型请求完成",
             {
                 "第几次模型请求": request_no,
+                "用途": purpose,
                 "Provider": provider_label(normalized_provider_id),
                 "耗时秒": f"{time.monotonic() - started_at:.2f}",
                 "响应字符数": len(response_text),
@@ -200,12 +211,14 @@ async def _request_llm_with_provider(
             allow_fallback=allow_fallback,
             summary=summary,
             chunk=chunk,
+            purpose=purpose,
         )
         _record_task_log(
             settings,
             "模型请求失败",
             {
                 "第几次模型请求": request_no,
+                "用途": purpose,
                 "Provider": provider_label(normalized_provider_id),
                 "耗时秒": f"{time.monotonic() - started_at:.2f}",
                 "错误": str(exc),
@@ -225,6 +238,7 @@ def _record_provider_request_error(
     allow_fallback: bool,
     summary: Any | None,
     chunk: Any | None,
+    purpose: str,
 ) -> None:
     record_model_error(
         settings,
@@ -239,6 +253,7 @@ def _record_provider_request_error(
             "allow_fallback": allow_fallback,
             "enable_streaming_llm_call": settings.enable_streaming_llm_call,
             "prompt_chars": len(prompt),
+            "purpose": purpose,
         },
     )
 

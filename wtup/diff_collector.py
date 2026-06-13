@@ -66,20 +66,52 @@ def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: i
     if not files:
         return [DiffChunk(index=1, total=1, files=[], patch_chars=0)]
 
-    files = order_files_by_similarity(files)
-    chunks = _split_files_by_file_limit(files, max_files)
+    related_groups = group_related_files(files)
+    group_chunks = _split_file_groups_by_file_limit(related_groups, max_files)
     if max_chars > 0:
-        chunks = [
+        group_chunks = [
             chunk
-            for file_group in chunks
-            for chunk in _split_files_by_char_limit(file_group, max_chars)
+            for group_chunk in group_chunks
+            for chunk in _split_file_groups_by_char_limit(group_chunk, max_chars)
         ]
 
+    chunks = [_flatten_file_groups(group_chunk) for group_chunk in group_chunks]
     total = len(chunks)
     return [
         DiffChunk(index=index + 1, total=total, files=chunk_files, patch_chars=sum(_file_patch_chars(item) for item in chunk_files))
         for index, chunk_files in enumerate(chunks)
     ]
+
+
+def group_related_files(files: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    key_to_group_index: dict[str, int] = {}
+
+    for file_info in files:
+        relation_keys = _relation_keys(file_info)
+        matched_indexes = sorted(
+            {key_to_group_index[key] for key in relation_keys if key in key_to_group_index}
+        )
+        if not matched_indexes:
+            key_to_group_index.update({key: len(groups) for key in relation_keys})
+            groups.append([file_info])
+            continue
+
+        target_index = matched_indexes[0]
+        for source_index in reversed(matched_indexes[1:]):
+            groups[target_index].extend(groups[source_index])
+            del groups[source_index]
+            for key, group_index in list(key_to_group_index.items()):
+                if group_index == source_index:
+                    key_to_group_index[key] = target_index
+                elif group_index > source_index:
+                    key_to_group_index[key] = group_index - 1
+
+        groups[target_index].append(file_info)
+        for key in relation_keys:
+            key_to_group_index[key] = target_index
+
+    return _order_file_groups_by_directory(groups)
 
 
 def _split_files_by_file_limit(files: list[dict[str, Any]], max_files: int = 0) -> list[list[dict[str, Any]]]:
@@ -88,9 +120,43 @@ def _split_files_by_file_limit(files: list[dict[str, Any]], max_files: int = 0) 
     return [files[index : index + max_files] for index in range(0, len(files), max_files)]
 
 
+def _split_file_groups_by_file_limit(
+    groups: list[list[dict[str, Any]]],
+    max_files: int = 0,
+) -> list[list[list[dict[str, Any]]]]:
+    if max_files <= 0:
+        return [groups]
+
+    chunks: list[list[list[dict[str, Any]]]] = []
+    current: list[list[dict[str, Any]]] = []
+    current_count = 0
+
+    for group in groups:
+        for part in _split_files_by_file_limit(group, max_files):
+            part_count = len(part)
+            if current and current_count + part_count > max_files:
+                chunks.append(current)
+                current = []
+                current_count = 0
+            current.append(part)
+            current_count += part_count
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _split_files_by_char_limit(files: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
     chunk_count = _target_chunk_count(files, max_chars=max_chars)
     return _split_files_by_balanced_chars(files, chunk_count)
+
+
+def _split_file_groups_by_char_limit(
+    groups: list[list[dict[str, Any]]],
+    max_chars: int,
+) -> list[list[list[dict[str, Any]]]]:
+    chunk_count = _target_group_chunk_count(groups, max_chars=max_chars)
+    return _split_file_groups_by_balanced_chars(groups, chunk_count)
 
 
 def _target_chunk_count(files: list[dict[str, Any]], *, max_chars: int = 0) -> int:
@@ -98,6 +164,13 @@ def _target_chunk_count(files: list[dict[str, Any]], *, max_chars: int = 0) -> i
     total_chars = sum(_file_patch_chars(file_info) for file_info in files)
     by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
     return max(1, min(file_count, by_chars))
+
+
+def _target_group_chunk_count(groups: list[list[dict[str, Any]]], *, max_chars: int = 0) -> int:
+    group_count = len(groups)
+    total_chars = sum(_file_group_patch_chars(group) for group in groups)
+    by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
+    return max(1, min(group_count, by_chars))
 
 
 def _split_files_by_balanced_chars(files: list[dict[str, Any]], chunk_count: int) -> list[list[dict[str, Any]]]:
@@ -122,6 +195,31 @@ def _split_files_by_balanced_chars(files: list[dict[str, Any]], chunk_count: int
     return chunks
 
 
+def _split_file_groups_by_balanced_chars(
+    groups: list[list[dict[str, Any]]],
+    chunk_count: int,
+) -> list[list[list[dict[str, Any]]]]:
+    if chunk_count <= 1:
+        return [groups]
+
+    chunks: list[list[list[dict[str, Any]]]] = []
+    remaining_groups = groups
+    remaining_chars = sum(_file_group_patch_chars(group) for group in remaining_groups)
+    remaining_chunks = chunk_count
+
+    while remaining_chunks > 1:
+        target_chars = remaining_chars / remaining_chunks
+        split_index = _best_group_split_index(remaining_groups, target_chars)
+        chunk_groups = remaining_groups[:split_index]
+        chunks.append(chunk_groups)
+        remaining_groups = remaining_groups[split_index:]
+        remaining_chars -= sum(_file_group_patch_chars(group) for group in chunk_groups)
+        remaining_chunks -= 1
+
+    chunks.append(remaining_groups)
+    return chunks
+
+
 def _best_split_index(files: list[dict[str, Any]], target_chars: float) -> int:
     max_index = len(files) - 1
     best_index = 1
@@ -138,11 +236,28 @@ def _best_split_index(files: list[dict[str, Any]], target_chars: float) -> int:
     return best_index
 
 
+def _best_group_split_index(groups: list[list[dict[str, Any]]], target_chars: float) -> int:
+    max_index = len(groups) - 1
+    best_index = 1
+    best_distance = float("inf")
+    running_chars = 0
+
+    for index in range(1, max_index + 1):
+        running_chars += _file_group_patch_chars(groups[index - 1])
+        distance = abs(running_chars - target_chars)
+        if distance < best_distance:
+            best_index = index
+            best_distance = distance
+
+    return best_index
+
+
 def order_files_by_similarity(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for file_info in files:
-        groups.setdefault(_similarity_key(file_info), []).append(file_info)
-    return [file_info for group in groups.values() for file_info in group]
+    return _flatten_file_groups(group_related_files(files))
+
+
+def _flatten_file_groups(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    return [file_info for group in groups for file_info in group]
 
 
 def render_chunk_input(summary: DiffSummary, chunk: DiffChunk) -> str:
@@ -211,7 +326,25 @@ def _file_patch_chars(file_info: dict[str, Any]) -> int:
     return len(str(file_info.get("patch") or "")) + len(str(file_info.get("filename") or ""))
 
 
+def _file_group_patch_chars(group: list[dict[str, Any]]) -> int:
+    return sum(_file_patch_chars(file_info) for file_info in group)
+
+
 def _similarity_key(file_info: dict[str, Any]) -> str:
+    directory, normalized_stem, suffix = _path_identity(file_info)
+    return f"{directory}|{normalized_stem}|{suffix}"
+
+
+def _relation_keys(file_info: dict[str, Any]) -> list[str]:
+    directory, normalized_stem, suffix = _path_identity(file_info)
+    keys = [f"path:{directory}|{normalized_stem}|{suffix}"]
+    if _is_specific_relation_stem(normalized_stem):
+        keys.append(f"name:{normalized_stem}|{suffix}")
+        keys.append(f"stem:{normalized_stem}")
+    return keys
+
+
+def _path_identity(file_info: dict[str, Any]) -> tuple[str, str, str]:
     filename = str(file_info.get("filename") or "").strip().replace("\\", "/")
     directory, _, basename = filename.rpartition("/")
     if not basename:
@@ -223,7 +356,37 @@ def _similarity_key(file_info: dict[str, Any]) -> str:
         suffix = ""
     normalized_stem = re.sub(r"\d+", "#", stem.lower())
     normalized_stem = re.sub(r"[_\-.]+", "_", normalized_stem).strip("_")
-    return f"{directory.lower()}|{normalized_stem}|{suffix.lower()}"
+    return directory.lower(), normalized_stem, suffix.lower()
+
+
+def _is_specific_relation_stem(stem: str) -> bool:
+    if len(stem) < 3 or not re.search(r"[a-z]", stem):
+        return False
+    return stem not in {
+        "readme",
+        "index",
+        "config",
+        "common",
+        "shared",
+        "strings",
+        "localization",
+        "lang",
+        "unit",
+        "units",
+        "weapon",
+        "weapons",
+        "vehicle",
+        "vehicles",
+    }
+
+
+def _order_file_groups_by_directory(groups: list[list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
+    directory_buckets: dict[str, list[list[dict[str, Any]]]] = {}
+    for group in groups:
+        first_file = group[0] if group else {}
+        directory = _path_identity(first_file)[0]
+        directory_buckets.setdefault(directory, []).append(group)
+    return [group for bucket in directory_buckets.values() for group in bucket]
 
 
 def parse_unified_diff(raw_diff_text: str) -> list[dict[str, Any]]:

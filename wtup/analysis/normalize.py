@@ -39,16 +39,17 @@ def parse_analysis_json(text: str) -> dict[str, Any] | None:
 def normalize_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     ai_analysis = normalize_ai_analysis(payload)
     return {
-        "report_title": str(payload.get("report_title") or "").strip(),
-        "summary": str(payload.get("summary") or "").strip() or "本次更新未给出摘要。",
+        "report_title": clean_pagination_text(payload.get("report_title")),
+        "summary": clean_pagination_text(payload.get("summary")) or "本次更新未给出摘要。",
         "importance": normalize_importance(payload.get("importance")),
         "update_sections": normalize_update_sections(payload.get("update_sections")),
         "ai_analysis": ai_analysis,
         "highlights": normalize_list(payload.get("highlights")),
         "player_impact": ai_analysis["player_impact"],
         "risks": ai_analysis["uncertainties"],
-        "recommendation": ai_analysis["recommendation"],
+        "recommendation": clean_pagination_text(ai_analysis["recommendation"]),
         "tags": normalize_list(payload.get("tags"), limit=8),
+        "tool_calls": normalize_tool_calls(payload.get("tool_calls")),
     }
 
 def normalize_importance(value: Any) -> str:
@@ -62,7 +63,7 @@ def normalize_list(value: Any, *, limit: int = 5) -> list[str]:
         items = [value]
     else:
         items = []
-    result = [str(item).strip() for item in items if str(item or "").strip()]
+    result = [clean_pagination_text(item) for item in items if clean_pagination_text(item)]
     return result[:limit]
 
 def normalize_ai_analysis(payload: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +72,7 @@ def normalize_ai_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     changed_content = normalize_list(data.get("changed_content") or payload.get("highlights"))
     player_impact = normalize_list(data.get("player_impact") or payload.get("player_impact"))
     uncertainties = normalize_list(data.get("uncertainties") or payload.get("risks"))
-    recommendation = str(data.get("recommendation") or payload.get("recommendation") or "").strip()
+    recommendation = clean_pagination_text(data.get("recommendation") or payload.get("recommendation"))
     return {
         "changed_content": changed_content,
         "player_impact": player_impact,
@@ -86,7 +87,7 @@ def normalize_update_sections(value: Any, *, section_limit: int = 8, item_limit:
     sections: list[dict[str, Any]] = []
     for section in value:
         if isinstance(section, dict):
-            title = str(section.get("title") or "").strip()
+            title = clean_pagination_text(section.get("title"))
             raw_items = section.get("items")
         else:
             title = ""
@@ -111,16 +112,63 @@ def normalize_update_items(value: Any, *, limit: int = 20, depth: int = 0) -> li
     result: list[dict[str, Any]] = []
     for item in items:
         if isinstance(item, dict):
-            text = str(item.get("text") or item.get("title") or "").strip()
+            text = clean_pagination_text(item.get("text") or item.get("title"))
             children = normalize_update_items(item.get("children"), limit=limit, depth=depth + 1)
         else:
-            text = str(item or "").strip()
+            text = clean_pagination_text(item)
             children = []
         if text:
             result.append({"text": text, "children": children})
         if len(result) >= limit:
             break
     return result
+
+def normalize_tool_calls(value: Any, *, limit: int = 8) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get("tool") or "").strip()
+        path = str(item.get("path") or "").strip().replace("\\", "/")
+        query = str(item.get("query") or "").strip()
+        reason = clean_pagination_text(item.get("reason"))
+        if not tool:
+            continue
+        result.append(
+            {
+                "tool": tool,
+                "path": path,
+                "query": query,
+                "reason": reason,
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+def clean_pagination_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    replacements = [
+        (r"本批\s*diff", "本次 diff"),
+        (r"当前\s*diff\s*分片", "本次 diff"),
+        (r"当前\s*分片", "本次 diff"),
+        (r"本\s*分片", "本次 diff"),
+        (r"该\s*分片", "本次 diff"),
+        (r"此\s*分片", "本次 diff"),
+        (r"本批次?", "本次 diff"),
+        (r"当前批次", "本次 diff"),
+        (r"第\s*\d+\s*/\s*\d+\s*批", "本次 diff"),
+        (r"第\s*\d+\s*批", "本次 diff"),
+    ]
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    text = re.sub(r"本次 diff(?=[\u4e00-\u9fff])", "本次 diff ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 def first_non_empty_line(text: str) -> str:
     for line in str(text or "").splitlines():

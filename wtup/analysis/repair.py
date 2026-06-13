@@ -29,6 +29,7 @@ async def parse_or_repair_analysis(
     raw_text: str,
     *,
     semaphore: asyncio.Semaphore | None = None,
+    purpose: str = "JSON 修复",
 ) -> dict[str, Any]:
     analysis, _ = await parse_or_repair_analysis_with_usage(
         context,
@@ -37,6 +38,7 @@ async def parse_or_repair_analysis(
         chunk,
         raw_text,
         semaphore=semaphore,
+        purpose=purpose,
     )
     return analysis
 
@@ -48,6 +50,7 @@ async def parse_or_repair_analysis_with_usage(
     raw_text: str,
     *,
     semaphore: asyncio.Semaphore | None = None,
+    purpose: str = "JSON 修复",
 ) -> tuple[dict[str, Any], TokenUsage]:
     parsed = parse_analysis_json(raw_text)
     if parsed is not None:
@@ -58,10 +61,10 @@ async def parse_or_repair_analysis_with_usage(
     repair_usage = TokenUsage()
     try:
         if semaphore is None:
-            response = await request_llm(context, settings, repair_prompt)
+            response = await request_llm(context, settings, repair_prompt, purpose=purpose)
         else:
             async with semaphore:
-                response = await request_llm(context, settings, repair_prompt)
+                response = await request_llm(context, settings, repair_prompt, purpose=purpose)
         repair_usage = extract_token_usage(response)
         ensure_usable_llm_response(response)
         repair_text = extract_response_text(response)

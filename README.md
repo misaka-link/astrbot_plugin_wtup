@@ -72,6 +72,11 @@ mode: commit
 - `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制，支持最多两位小数。
 - `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`。
 - `max_retry_count`：最大重试次数，默认 2。每次重试都会把失败任务按文件边界拆成两半。
+- `enable_model_tool_calls`：是否允许模型通过 JSON 协议申请补充上下文，默认关闭。
+- `max_tool_call_rounds`：每个分片最多工具调用轮数，默认 2；设置为 0 等同关闭补充上下文分析。
+- `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
+- `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
+- `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/` 目录保留最新 5 个文件；设置为 0 表示不限制。
 
 `github_token` 获取位置：
@@ -120,9 +125,11 @@ https://github.com/settings/tokens
 
 `max_files_per_report` 和 `max_input_tokens` 默认都是 `0`，表示不限制。
 
-如果其中任意一个设置为大于 `0`，插件会先按 `max_files_per_report` 把文件拆成基础分片，设置为大于 `0` 时每个基础分片都不会超过该文件数上限。随后插件再按完整模型输入估算 token；某一次请求超过 `max_input_tokens` 时，会在保证文件完整性的前提下继续拆分该基础分片。拆分前仍会优先把同目录、同后缀且文件名相近的改动排在一起。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成报告；默认最终只生成一张图片并推送一次。
+如果其中任意一个设置为大于 `0`，插件会先按文件关联性分组，再按 `max_files_per_report` 把分组打包成基础分片，设置为大于 `0` 时每个基础分片都不会超过该文件数上限。关联性会优先考虑同目录、同后缀、文件名归一后相近的改动，也会尽量把跨目录但同一实体名的文件放在一起。随后插件再按完整模型输入估算 token；某一次请求超过 `max_input_tokens` 时，会在保证文件完整性的前提下继续拆分该基础分片，并优先在关联分组边界切开。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成报告；默认最终只生成一张图片并推送一次。
 
 插件只在文件边界拆分，不会拆开单个文件 patch。设置 `max_files_per_report` 后，实际模型请求不会超过该文件数上限；由于要保证文件完整性，token 估算值可能会超过配置值。如果某个文件本身超过 `max_input_tokens`，它会完整进入某个分片，不会被截断。
+
+为避免模型把内部拆分信息写进最终报告，标准化和合并阶段会清理 `本批 diff`、`当前分片`、`第几批` 等分页语境表述，统一改成面向整次更新的说法。这个清理是通用规则，不只针对某一类武器、载具或参数。
 
 `max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
@@ -138,6 +145,10 @@ https://github.com/settings/tokens
 
 如果模型返回内容不是有效 JSON，插件会强制再发起一次模型请求，要求模型基于原始输出修复为严格 JSON。这个 JSON 修复请求不受“是否启动总结模型”开关影响；如果修复仍失败，才会生成需复核的兜底分析。
 
+`enable_model_tool_calls` 开启后，分片分析模型可以在 JSON 顶层输出 `tool_calls` 申请补充上下文。插件不会把文件系统直接交给模型，而是先校验工具名、路径、轮数、每轮数量和返回大小，再由插件执行工具并发起一次“补充上下文分析”模型请求。当前支持 `read_changed_patch`、`read_changed_file`、`search_changed_files`、`list_related_files`。其中 `read_changed_patch`、`search_changed_files`、`list_related_files` 只使用本次 compare/diff 已建立的本地索引；`read_changed_file` 会优先读取本地已有全文内容，本地没有时允许从 GitHub 拉取目标 head commit 下的文件全文，并按 `max_tool_result_chars` 截断。
+
+工具调用最多执行 `max_tool_call_rounds` 轮；如果模型继续请求但已超限，或路径不安全、文件不存在、GitHub 拉取失败，插件会把失败原因作为工具结果返回，要求模型写入 `uncertainties`，不会让模型编造。
+
 `enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
 
 开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次总结模型整理最终报告。总结模型只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果总结模型失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
@@ -148,7 +159,7 @@ https://github.com/settings/tokens
 
 总结模型、JSON 修复和失败拆分重试是三套独立机制：总结模型只负责最终整理；JSON 修复只负责把非 JSON 输出修复为严格 JSON；失败拆分重试只处理模型请求失败。
 
-插件会统计本次检查内所有模型调用返回的 token usage，包括分片分析、失败后拆分重试、JSON 修复请求和总结模型请求。统计口径优先使用 AstrBot Provider 返回的 `usage.input`、`usage.output`、`usage.total`，同时兼容 OpenAI 风格的 `prompt_tokens`、`completion_tokens`、`total_tokens`；如果当前 Provider 不返回 usage，则对应请求记为 0，不再用输入估算值冒充真实消耗。
+插件会统计本次检查内所有模型调用返回的 token usage，包括分片分析、补充上下文分析、失败后拆分重试、JSON 修复请求和总结模型请求。统计口径优先使用 AstrBot Provider 返回的 `usage.input`、`usage.output`、`usage.total`，同时兼容 OpenAI 风格的 `prompt_tokens`、`completion_tokens`、`total_tokens`；如果当前 Provider 不返回 usage，则对应请求记为 0，不再用输入估算值冒充真实消耗。
 
 启用 `enable_pre_summary_report` 的双报告模式下，分析前报告显示和保存的是总结模型调用前的累计 token；分析后报告显示和保存的是包含总结模型在内的最终累计 token。
 
@@ -168,7 +179,7 @@ https://github.com/settings/tokens
 
 配置 `analysis_file_groups` 后，群推送流程完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
 
-每次检查还会额外生成一份任务流水日志，保存本次任务从开始、GitHub 获取、diff 摘要、模型分析、报告生成到推送结束的全流程记录。每一次模型请求都会记录“第几次模型请求”、Provider、分片信息、估算输入 token 数量、请求耗时和 Provider 返回的真实 token usage，不记录模型输入正文，方便按单次任务回溯问题。
+每次检查还会额外生成一份任务流水日志，保存本次任务从开始、GitHub 获取、diff 摘要、模型分析、报告生成到推送结束的全流程记录。每一次模型请求都会记录用途、“第几次模型请求”、Provider、分片信息、估算输入 token 数量、请求耗时和 Provider 返回的真实 token usage，不记录模型输入正文；模型工具调用会单独记录工具名、路径、原因、来源、结果、返回字符数和是否截断，方便按单次任务回溯问题。
 
 ## 数据持久化
 
