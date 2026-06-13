@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ except ImportError:
 
 COMMAND_RECEIVED_EMOJI_ID = "289"
 COMMAND_DONE_EMOJI_ID = "124"
+CLEAR_CACHE_FILES_CONFIG_KEY = "clear_cache_files"
 
 
 def _get_event_message_id(event: AstrMessageEvent) -> str:
@@ -120,6 +122,71 @@ def _event_is_configured_admin(event: AstrMessageEvent, admin_targets: list[str]
     )
 
 
+def _set_config_value(config: Any, key: str, value: Any) -> bool:
+    changed = False
+    setter = getattr(config, "set", None)
+    if callable(setter):
+        try:
+            setter(key, value)
+            changed = True
+        except Exception as exc:
+            logger.warning("[%s] 更新配置项 %s 失败: %s", PLUGIN_NAME, key, exc)
+
+    try:
+        config[key] = value
+        changed = True
+    except Exception:
+        pass
+
+    try:
+        setattr(config, key, value)
+        changed = True
+    except Exception:
+        pass
+
+    return changed
+
+
+def _save_config(config: Any) -> bool:
+    for method_name in ("save_config", "save", "save_plugin_config"):
+        method = getattr(config, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method()
+            return True
+        except TypeError:
+            try:
+                method(config)
+                return True
+            except Exception as exc:
+                logger.warning("[%s] 保存配置失败: %s", PLUGIN_NAME, exc)
+                return False
+        except Exception as exc:
+            logger.warning("[%s] 保存配置失败: %s", PLUGIN_NAME, exc)
+            return False
+    return False
+
+
+def _clear_directory_contents(directory: Path) -> tuple[int, int]:
+    if not directory.exists():
+        return 0, 0
+
+    removed_count = 0
+    failed_count = 0
+    for path in list(directory.iterdir()):
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            removed_count += 1
+        except Exception as exc:
+            failed_count += 1
+            logger.warning("[%s] 清理缓存文件失败: %s (%s)", PLUGIN_NAME, path, exc)
+    return removed_count, failed_count
+
+
 def _get_event_group_id(event: AstrMessageEvent) -> str:
     for method_name in ("get_group_id",):
         method = getattr(event, method_name, None)
@@ -164,9 +231,10 @@ def _get_event_group_id(event: AstrMessageEvent) -> str:
 class WTUpdatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config = config if config is not None else {}
         self.settings: PluginConfig = load_config(self.config)
         self.data_dir = self._resolve_data_dir()
+        self._clear_cache_files_on_startup()
         self.state_store = StateStore(self.data_dir / "state.json")
         self.image_dir = self.data_dir / "images"
         self.log_dir = self.data_dir / "logs"
@@ -185,6 +253,22 @@ class WTUpdatePlugin(Star):
         )
         self.settings = self.service.with_runtime_hooks(self.settings)
         self.service.settings = self.settings
+
+    def _clear_cache_files_on_startup(self) -> None:
+        if not self.settings.clear_cache_files:
+            return
+
+        removed_count, failed_count = _clear_directory_contents(self.data_dir)
+        if _set_config_value(self.config, CLEAR_CACHE_FILES_CONFIG_KEY, False):
+            _save_config(self.config)
+        self.settings = load_config(self.config)
+        logger.warning(
+            "[%s] 已执行一次性缓存清理，目录=%s，删除 %s 项，失败 %s 项，已关闭后台开关",
+            PLUGIN_NAME,
+            self.data_dir,
+            removed_count,
+            failed_count,
+        )
 
     async def initialize(self):
         self._task = asyncio.create_task(self._monitor_loop())

@@ -278,6 +278,16 @@ class ConfigTest(unittest.TestCase):
 
         self.assertTrue(settings.enable_streaming_llm_call)
 
+    def test_clear_cache_files_defaults_to_disabled(self) -> None:
+        settings = load_config({})
+
+        self.assertFalse(settings.clear_cache_files)
+
+    def test_clear_cache_files_accepts_bool_like_values(self) -> None:
+        settings = load_config({"clear_cache_files": "开启"})
+
+        self.assertTrue(settings.clear_cache_files)
+
 
 class FakeContext:
     def __init__(self, response: str):

@@ -67,6 +67,7 @@ class PluginConfig:
     max_tool_result_chars: int = 12000
     tool_call_prompt: str = DEFAULT_TOOL_CALL_PROMPT
     enable_pre_summary_report: bool = False
+    clear_cache_files: bool = False
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
     backup_provider_ids: list[str] = field(default_factory=list)
@@ -130,7 +131,7 @@ def config_get(config: Any, key: str, default: Any = None) -> Any:
     try:
         return config[key]
     except Exception:
-        return default
+        return getattr(config, key, default)
 
 
 def as_int(value: Any, default: int, *, minimum: int | None = None) -> int:
@@ -238,6 +239,7 @@ def load_config(config: Any) -> PluginConfig:
             config_get(config, "tool_call_prompt", DEFAULT_TOOL_CALL_PROMPT)
             or DEFAULT_TOOL_CALL_PROMPT
         ),
+        clear_cache_files=as_bool(config_get(config, "clear_cache_files", False)),
         max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
         enable_push_append_text=as_bool(config_get(config, "enable_push_append_text", False)),
         push_append_text_template=str(

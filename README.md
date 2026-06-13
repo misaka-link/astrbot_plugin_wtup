@@ -77,6 +77,7 @@ mode: commit
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
+- `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的缓存、日志、图片和状态文件，然后自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/` 目录保留最新 5 个文件；设置为 0 表示不限制。
 
 `github_token` 获取位置：
@@ -192,6 +193,8 @@ https://github.com/settings/tokens
 - `images/`：保存渲染后的报告图片。
 
 `max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件。
+
+后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
 
 ## 首次运行
 

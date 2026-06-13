@@ -8,6 +8,7 @@ import types
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from wtup.config import PLUGIN_VERSION
 from wtup.config import load_config
@@ -83,6 +84,35 @@ class ModelErrorLogTest(unittest.TestCase):
             self.assertEqual(len(list(target.glob("*.log"))), 5)
 
 
+class ClearCacheFilesStartupTest(unittest.TestCase):
+    def test_startup_clear_cache_removes_data_files_and_disables_switch(self) -> None:
+        main = import_main_with_astrbot_stubs()
+
+        class SavableConfig(dict):
+            saved = False
+
+            def save_config(self):
+                self.saved = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            logs_dir = data_dir / "logs"
+            logs_dir.mkdir()
+            (logs_dir / "old.log").write_text("old", encoding="utf-8")
+            (data_dir / "state.json").write_text("{}", encoding="utf-8")
+            config = SavableConfig({"clear_cache_files": "开启"})
+
+            with patch.object(main.StarTools, "get_data_dir", return_value=str(data_dir)):
+                plugin = main.WTUpdatePlugin(context=object(), config=config)
+
+            self.assertTrue(data_dir.exists())
+            self.assertFalse(logs_dir.exists())
+            self.assertFalse((data_dir / "state.json").exists())
+            self.assertFalse(config["clear_cache_files"])
+            self.assertTrue(config.saved)
+            self.assertFalse(plugin.settings.clear_cache_files)
+
+
 def import_main_with_astrbot_stubs():
     if "main" in sys.modules:
         return importlib.import_module("main")
@@ -96,12 +126,16 @@ def import_main_with_astrbot_stubs():
     class AstrMessageEvent:
         pass
 
+    class MessageChain:
+        pass
+
     class Filter:
         @staticmethod
         def command(_name):
             return lambda func: func
 
     event_module.AstrMessageEvent = AstrMessageEvent
+    event_module.MessageChain = MessageChain
     event_module.filter = Filter()
 
     star_module = types.ModuleType("astrbot.api.star")
