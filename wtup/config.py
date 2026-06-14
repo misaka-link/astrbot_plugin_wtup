@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 
 PLUGIN_NAME = "astrbot_plugin_wtup"
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.1.2"
 REPO_OWNER = "gszabi99"
 REPO_NAME = "War-Thunder-Datamine"
 REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"

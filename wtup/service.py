@@ -439,7 +439,8 @@ class UpdateCheckService:
             post_suffix = "总分析后" if report_specs else ""
             report_specs.append(("final", post_label, analysis, post_suffix, token_usage))
             report_artifacts: list[ReportArtifact] = []
-            cleanup_keep = (
+            log_cleanup_keep = None if self.settings.max_saved_artifacts <= 0 else self.settings.max_saved_artifacts
+            file_cleanup_keep = (
                 None
                 if self.settings.max_saved_artifacts <= 0
                 else max(self.settings.max_saved_artifacts, len(report_specs))
@@ -463,7 +464,7 @@ class UpdateCheckService:
                     artifact_dirname=report_artifact_dirname,
                     filename_suffix=filename_suffix,
                     display_name=display_name,
-                    cleanup_keep=cleanup_keep,
+                    cleanup_keep=log_cleanup_keep,
                     token_usage=report_token_usage,
                 )
                 self.runtime.record_task_log(
@@ -487,7 +488,7 @@ class UpdateCheckService:
                         token_usage=report_token_usage,
                     )
                 )
-            self.runtime.cleanup_saved_artifacts(self.image_dir, keep=cleanup_keep)
+            self.runtime.cleanup_saved_artifacts(self.image_dir, keep=file_cleanup_keep)
             final_report = report_artifacts[-1]
             image_path = final_report.image_path
             fallback_text = final_report.fallback_text

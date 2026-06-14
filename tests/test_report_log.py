@@ -53,8 +53,8 @@ class ReportLogFilenameTest(unittest.TestCase):
             "c9ba0d7...2c83e3b_44e2166df6e2b3f2",
         )
 
-    def test_plugin_version_is_011(self) -> None:
-        self.assertEqual(PLUGIN_VERSION, "0.1.1")
+    def test_plugin_version_is_012(self) -> None:
+        self.assertEqual(PLUGIN_VERSION, "0.1.2")
 
 
 class ModelErrorLogTest(unittest.TestCase):
