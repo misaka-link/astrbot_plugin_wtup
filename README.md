@@ -41,6 +41,7 @@ mode: commit
 - `wtup/analyzer.py`：兼容导出层，保留旧的 `wtup.analyzer` 导入路径。
 - `wtup/diff_collector.py`：GitHub compare/diff 数据整理和文件分片。
 - `wtup/github_cache.py`：GitHub compare、原始 diff 和补充上下文文件的落盘缓存。
+- `wtup/analysis_cache.py`：按全部配置项和本次提交范围生成特征值，缓存已成功生成的模型分析结果。
 - `wtup/renderer.py`：报告 HTML、纯文本和图片渲染辅助。
 - `wtup/notifier.py`：群消息、文字消息和日志文件推送。
 - `templates/help_miku.html`：报告 HTML 骨架。
@@ -192,10 +193,11 @@ https://github.com/settings/tokens
 - `errors/`：保存单个 Provider 请求失败、拆分重试、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback、Provider ID 和本次 compare/chunk 元数据；即使后续备用模型成功，主模型的失败原因也会单独记录。
 - `images/`：保存渲染后的报告图片。
 - `github_cache/`：保存 GitHub compare API 响应、原始 `.diff` 文本，以及模型工具调用 `read_changed_file` 拉取的目标 commit 完整文件。最新 commit 检查仍实时请求 GitHub，不走缓存；compare/diff/完整文件会先查本地缓存，未命中才请求 GitHub，请求成功后写入缓存。
+- `analysis_cache/`：保存已成功生成的模型分析结果。缓存目录名由“全部插件配置项 + 本次实际获取到的提交范围（例如 `c9ba0d7...2c83e3b` 对应的完整 base/head sha）”计算短 md5 特征值生成；同一配置和同一提交范围再次检查时会直接复用缓存分析结果，不再调用大模型。命中缓存时仍会重新渲染、保存并按当前命令/推送目标输出报告，任务日志会记录缓存目录和特征值；失败或需复核的分析结果不会写入该缓存。
 
-`max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件；`github_cache/` 不受该数量限制影响。
+`max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件；`github_cache/` 和 `analysis_cache/` 不受该数量限制影响。
 
-后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的 GitHub 缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
+后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的 GitHub 缓存、模型分析缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
 
 ## 首次运行
 

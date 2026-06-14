@@ -23,6 +23,7 @@ from .analyzer import (
     split_chunks_by_token_limit,
     sum_token_usage,
 )
+from .analysis_cache import AnalysisResultCache
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import DiffChunk, build_diff_summary, short_sha
 from .github_cache import GitHubCache
@@ -107,6 +108,7 @@ class UpdateCheckService:
         template_path: Path,
         task_log_dir: Path | None = None,
         github_cache_dir: Path | None = None,
+        analysis_cache_dir: Path | None = None,
         render_host: Any | None = None,
     ) -> None:
         self.context = context
@@ -117,6 +119,9 @@ class UpdateCheckService:
         self.error_dir = error_dir
         self.task_log_dir = task_log_dir if task_log_dir is not None else log_dir.parent / "task_logs"
         self.github_cache_dir = github_cache_dir if github_cache_dir is not None else log_dir.parent / "github_cache"
+        self.analysis_cache_dir = (
+            analysis_cache_dir if analysis_cache_dir is not None else log_dir.parent / "analysis_cache"
+        )
         self.template_path = template_path
         self.runtime = RuntimeState(
             settings=settings,
@@ -126,6 +131,10 @@ class UpdateCheckService:
             task_log_dir=self.task_log_dir,
         )
         self.github_cache = GitHubCache(self.github_cache_dir, task_log_recorder=self.runtime.record_task_log)
+        self.analysis_cache = AnalysisResultCache(
+            self.analysis_cache_dir,
+            task_log_recorder=self.runtime.record_task_log,
+        )
         self.settings = self.with_runtime_hooks(settings)
         self._check_lock = asyncio.Lock()
 
@@ -316,51 +325,83 @@ class UpdateCheckService:
 
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 5/5 开始", {"内容": "分析并生成报告"})
-            chunk_results = await analyze_chunks(self.context, self.settings, summary)
-            token_usage = sum_token_usage(result.token_usage for result in chunk_results)
-            analysis_failure_reasons = chunk_failure_reasons(chunk_results)
-            pre_summary_token_usage = token_usage
             summary_model_enabled = self.settings.enable_summary_model
-            merged_analysis: dict[str, Any] | None = None
-            try:
-                analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
-                merged_analysis = analysis
-                if summary_model_enabled:
-                    logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
-                    self.runtime.record_task_log("总结模型开始", {"内容": "整理合并报告"})
-                    analysis, summary_usage = await refine_merged_analysis_with_usage(
-                        self.context,
-                        self.settings,
-                        summary,
-                        analysis,
-                    )
-                    token_usage += summary_usage
-            except Exception as exc:
-                logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
-                analysis_failure_reasons.append(f"合并分片分析结果失败: {exc}")
-                if summary_model_enabled:
-                    logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
-                    self.runtime.record_task_log(
-                        "总结模型开始",
-                        {
-                            "内容": "合并失败后改用分片原始分析 JSON 生成报告",
-                            "合并错误": str(exc),
-                        },
-                    )
-                    analysis, summary_usage = await refine_chunk_analyses_with_usage(
-                        self.context,
-                        self.settings,
-                        summary,
-                        summary.chunks,
-                        chunk_results,
-                        merge_error=str(exc),
-                    )
-                    token_usage += summary_usage
-                else:
-                    analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
-            if analysis_needs_review(analysis) and not analysis_failure_reasons:
-                analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
+            analysis_cache_entry = self.analysis_cache.read(settings=self.settings, repo=REPO_FULL_NAME, summary=summary)
+            analysis_source = "cache" if analysis_cache_entry is not None else "model"
+            if analysis_cache_entry is not None:
+                analysis = analysis_cache_entry.analysis
+                merged_analysis = analysis_cache_entry.merged_analysis
+                token_usage = analysis_cache_entry.token_usage
+                pre_summary_token_usage = analysis_cache_entry.pre_summary_token_usage
+                analysis_failure_reasons: list[str] = []
+                logger.warning(
+                    "[%s] 分析结果缓存命中，跳过大模型请求: %s",
+                    PLUGIN_NAME,
+                    analysis_cache_entry.directory,
+                )
+                self.runtime.record_task_log(
+                    "模型分析跳过",
+                    {
+                        "原因": "分析结果缓存命中",
+                        "缓存目录": str(analysis_cache_entry.directory),
+                        "缓存特征": analysis_cache_entry.key,
+                    },
+                )
+            else:
+                chunk_results = await analyze_chunks(self.context, self.settings, summary)
+                token_usage = sum_token_usage(result.token_usage for result in chunk_results)
+                analysis_failure_reasons = chunk_failure_reasons(chunk_results)
+                pre_summary_token_usage = token_usage
+                merged_analysis: dict[str, Any] | None = None
+                try:
+                    analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
+                    merged_analysis = analysis
+                    if summary_model_enabled:
+                        logger.warning("[%s] 已启动总结模型，正在整理合并报告...", PLUGIN_NAME)
+                        self.runtime.record_task_log("总结模型开始", {"内容": "整理合并报告"})
+                        analysis, summary_usage = await refine_merged_analysis_with_usage(
+                            self.context,
+                            self.settings,
+                            summary,
+                            analysis,
+                        )
+                        token_usage += summary_usage
+                except Exception as exc:
+                    logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
+                    analysis_failure_reasons.append(f"合并分片分析结果失败: {exc}")
+                    if summary_model_enabled:
+                        logger.warning("[%s] 已启动总结模型，改用分片原始分析 JSON 生成报告...", PLUGIN_NAME)
+                        self.runtime.record_task_log(
+                            "总结模型开始",
+                            {
+                                "内容": "合并失败后改用分片原始分析 JSON 生成报告",
+                                "合并错误": str(exc),
+                            },
+                        )
+                        analysis, summary_usage = await refine_chunk_analyses_with_usage(
+                            self.context,
+                            self.settings,
+                            summary,
+                            summary.chunks,
+                            chunk_results,
+                            merge_error=str(exc),
+                        )
+                        token_usage += summary_usage
+                    else:
+                        analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
+                if analysis_needs_review(analysis) and not analysis_failure_reasons:
+                    analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
             analysis_failed = bool(analysis_failure_reasons)
+            if not analysis_failed and analysis_source == "model":
+                self.analysis_cache.write(
+                    settings=self.settings,
+                    repo=REPO_FULL_NAME,
+                    summary=summary,
+                    analysis=analysis,
+                    merged_analysis=merged_analysis,
+                    token_usage=token_usage,
+                    pre_summary_token_usage=pre_summary_token_usage,
+                )
             logger.warning(
                 "[%s] 模型真实 token 消耗: total=%d, prompt=%d, completion=%d",
                 PLUGIN_NAME,
@@ -371,6 +412,7 @@ class UpdateCheckService:
             self.runtime.record_task_log(
                 "模型分析完成",
                 {
+                    "来源": "缓存" if analysis_source == "cache" else "模型请求",
                     "失败原因数": len(analysis_failure_reasons),
                     "真实总token": token_usage.total_tokens,
                     "真实输入token": token_usage.prompt_tokens,
@@ -636,10 +678,14 @@ class UpdateCheckService:
                     short_sha(latest.sha),
                 )
 
+            model_request_count = (
+                0 if analysis_source == "cache" else len(summary.chunks) + (1 if summary_model_enabled else 0)
+            )
+            source_text = "分析缓存命中，未调用大模型" if analysis_source == "cache" else "已调用大模型"
             message = (
                 f"发现更新：{short_sha(previous_sha)}...{short_sha(latest.sha)}，"
-                f"共 {summary.total_files} 个文件，模型请求 {len(summary.chunks) + (1 if summary_model_enabled else 0)} 次，"
-                f"并发 {self.settings.model_concurrency}，已生成 {len(report_artifacts)} 份报告。"
+                f"共 {summary.total_files} 个文件，模型请求 {model_request_count} 次，"
+                f"并发 {self.settings.model_concurrency}，{source_text}，已生成 {len(report_artifacts)} 份报告。"
             )
             if send_to_groups:
                 if analysis_failed:
@@ -665,6 +711,7 @@ class UpdateCheckService:
                 "commit_marked_complete": should_mark_seen,
                 "report_sent_count": report_sent_count,
                 "report_failed_count": report_failed_count,
+                "analysis_source": analysis_source,
                 "reports": [
                     {
                         "key": report.key,
