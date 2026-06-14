@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from wtup.config import load_config
 from wtup.runtime import RuntimeState, format_elapsed_duration
@@ -69,6 +70,38 @@ class RuntimeAppendTextTest(unittest.TestCase):
             self.assertNotIn("请求内容", content)
             self.assertNotIn("请分析这个 diff", content)
             self.assertIn("任务结束", content)
+
+    def test_save_report_log_writes_to_task_directory_without_overwrite(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            runtime = RuntimeState(
+                settings=load_config({"max_saved_artifacts": 5}),
+                state_store=StateStore(base / "state.json"),
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+            )
+            summary = SimpleNamespace(base_sha="base", head_sha="head")
+            analysis = {"report_title": "1.0->1.1"}
+
+            first = runtime.save_report_log(
+                summary,
+                analysis,
+                "第一次",
+                artifact_dirname="base...head_abc123",
+            )
+            second = runtime.save_report_log(
+                summary,
+                analysis,
+                "第二次",
+                artifact_dirname="base...head_abc123",
+            )
+
+            self.assertEqual(first.parent.name, "base...head_abc123")
+            self.assertEqual(second.parent, first.parent)
+            self.assertEqual(first.name, "1.0_1.1.log")
+            self.assertEqual(second.name, "1.0_1.1_1.log")
+            self.assertEqual(first.read_text(encoding="utf-8").count("第一次"), 1)
+            self.assertEqual(second.read_text(encoding="utf-8").count("第二次"), 1)
 
 
 if __name__ == "__main__":

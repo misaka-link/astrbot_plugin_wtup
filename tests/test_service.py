@@ -190,6 +190,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(analyze_chunks.await_count, 1)
             self.assertEqual(merge_chunk_analyses.call_count, 1)
             self.assertEqual(len(list((base / "analysis_cache").glob("base...head_*"))), 1)
+            self.assertEqual(len(list((base / "logs").glob("base...head_*/*.log"))), 2)
 
     async def test_check_once_analysis_cache_key_changes_with_config(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -476,10 +477,13 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 ],
             )
             task = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")["last_generated_task"]
-            self.assertEqual(task["log_path"], str(base / "logs" / "2.56.0.38_2.56.0.39_总分析后.log"))
+            task_log_path = Path(task["log_path"])
+            self.assertEqual(task_log_path.name, "2.56.0.38_2.56.0.39_总分析后.log")
+            self.assertEqual(task_log_path.parent.parent, base / "logs")
+            self.assertTrue(task_log_path.parent.name.startswith("base...head_"))
             self.assertEqual([report["key"] for report in task["reports"]], ["pre_summary", "final"])
-            pre_log = (base / "logs" / "2.56.0.38_2.56.0.39_总分析前.log").read_text(encoding="utf-8")
-            post_log = (base / "logs" / "2.56.0.38_2.56.0.39_总分析后.log").read_text(encoding="utf-8")
+            pre_log = Path(task["reports"][0]["log_path"]).read_text(encoding="utf-8")
+            post_log = Path(task["reports"][1]["log_path"]).read_text(encoding="utf-8")
             self.assertIn("Token 消耗：总 150 · 输入 100 · 输出 50", pre_log)
             self.assertIn("Token 消耗：总 200 · 输入 130 · 输出 70", post_log)
 

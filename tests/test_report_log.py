@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 import tempfile
 import types
@@ -12,7 +13,12 @@ from unittest.mock import patch
 
 from wtup.config import PLUGIN_VERSION
 from wtup.config import load_config
-from wtup.report_log import add_report_log_suffix, build_report_log_filename, sanitize_filename
+from wtup.report_log import (
+    add_report_log_suffix,
+    build_report_log_filename,
+    build_task_artifact_dirname,
+    sanitize_filename,
+)
 from wtup.runtime import RuntimeState
 from wtup.state_store import StateStore
 
@@ -37,6 +43,14 @@ class ReportLogFilenameTest(unittest.TestCase):
         self.assertEqual(
             add_report_log_suffix("2.56.0.38_2.56.0.39.log", "总分析前"),
             "2.56.0.38_2.56.0.39_总分析前.log",
+        )
+
+    def test_task_artifact_dirname_matches_analysis_cache_style(self) -> None:
+        summary = types.SimpleNamespace(base_sha="c9ba0d7abcdef", head_sha="2c83e3babcdef")
+
+        self.assertEqual(
+            build_task_artifact_dirname(summary, "44e2166df6e2b3f2"),
+            "c9ba0d7...2c83e3b_44e2166df6e2b3f2",
         )
 
     def test_plugin_version_is_011(self) -> None:
@@ -82,6 +96,31 @@ class ModelErrorLogTest(unittest.TestCase):
             runtime.cleanup_saved_artifacts(target)
 
             self.assertEqual(len(list(target.glob("*.log"))), 5)
+
+    def test_runtime_cleanup_keeps_latest_task_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            target = base / "logs"
+            target.mkdir()
+            for index in range(4):
+                path = target / f"task-{index}"
+                path.mkdir()
+                (path / "report.log").write_text(str(index), encoding="utf-8")
+                os.utime(path, (index, index))
+            legacy_file = target / "legacy.log"
+            legacy_file.write_text("old", encoding="utf-8")
+            os.utime(legacy_file, (0.5, 0.5))
+
+            runtime = RuntimeState(
+                settings=load_config({"max_saved_artifacts": 2}),
+                state_store=StateStore(base / "state.json"),
+                log_dir=target,
+                error_dir=base / "errors",
+            )
+
+            runtime.cleanup_saved_artifact_directories(target)
+
+            self.assertEqual(sorted(path.name for path in target.iterdir()), ["task-2", "task-3"])
 
 
 class ClearCacheFilesStartupTest(unittest.TestCase):

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Any
+
+from .diff_collector import short_sha
 
 
 VERSION_TITLE_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*->\s*(\d+(?:\.\d+)*)\s*$")
@@ -30,6 +33,12 @@ def add_report_log_suffix(filename: str, suffix: str) -> str:
     if path.lower().endswith(".log"):
         return f"{path[:-4]}_{clean_suffix}.log"
     return f"{path}_{clean_suffix}.log"
+
+
+def build_task_artifact_dirname(summary: Any, key: str) -> str:
+    range_label = f"{short_sha(getattr(summary, 'base_sha', ''))}...{short_sha(getattr(summary, 'head_sha', ''))}"
+    key_label = sanitize_filename(str(key or "unknown"), fallback="unknown")
+    return sanitize_filename(f"{range_label}_{key_label}", fallback=f"unknown_{key_label}")
 
 
 def sanitize_filename(filename: str, *, fallback: str = "report.log") -> str:

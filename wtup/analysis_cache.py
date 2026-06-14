@@ -12,6 +12,7 @@ from typing import Any, Callable
 from .analysis import TokenUsage
 from .config import PLUGIN_NAME, PluginConfig
 from .diff_collector import DiffSummary, short_sha
+from .report_log import build_task_artifact_dirname
 
 
 _logger = logging.getLogger(PLUGIN_NAME)
@@ -46,8 +47,7 @@ class AnalysisResultCache:
 
     def directory_for(self, *, settings: PluginConfig, repo: str, summary: DiffSummary) -> Path:
         key = self.build_key(settings=settings, repo=repo, summary=summary)
-        range_label = f"{short_sha(summary.base_sha) or 'unknown'}...{short_sha(summary.head_sha) or 'unknown'}"
-        return self.root / f"{range_label}_{key}"
+        return self.root / build_task_artifact_dirname(summary, key)
 
     def read(self, *, settings: PluginConfig, repo: str, summary: DiffSummary) -> AnalysisCacheEntry | None:
         key = self.build_key(settings=settings, repo=repo, summary=summary)

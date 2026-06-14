@@ -425,6 +425,11 @@ class UpdateCheckService:
                 files=summary.files,
                 patch_chars=sum(chunk.patch_chars for chunk in summary.chunks),
             )
+            report_artifact_dirname = self.analysis_cache.directory_for(
+                settings=self.settings,
+                repo=REPO_FULL_NAME,
+                summary=summary,
+            ).name
             report_specs: list[tuple[str, str, dict[str, Any], str, TokenUsage]] = []
             if self.settings.enable_pre_summary_report and summary_model_enabled and merged_analysis is not None:
                 report_specs.append(
@@ -455,6 +460,7 @@ class UpdateCheckService:
                     summary,
                     report_analysis,
                     fallback_text,
+                    artifact_dirname=report_artifact_dirname,
                     filename_suffix=filename_suffix,
                     display_name=display_name,
                     cleanup_keep=cleanup_keep,

@@ -190,7 +190,7 @@
   "max_saved_artifacts": {
     "type": "int",
     "description": "插件文件最大保存数量",
-    "hint": "分别限制 logs、images、errors、task_logs 目录中保留的文件数量。默认 5，超过后删除旧文件并保留最新文件；设置为 0 表示不限制。GitHub 缓存目录 github_cache 和模型分析缓存目录 analysis_cache 不受此项限制。",
+    "hint": "logs 目录按任务结果目录保留数量，images、errors、task_logs 目录按文件保留数量。默认 5，超过后删除旧项目并保留最新项目；设置为 0 表示不限制。GitHub 缓存目录 github_cache 和模型分析缓存目录 analysis_cache 不受此项限制。",
     "default": 5
   }
 }

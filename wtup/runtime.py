@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import traceback
 from datetime import datetime
@@ -212,6 +213,7 @@ class RuntimeState:
         analysis: dict[str, Any],
         fallback_text: str,
         *,
+        artifact_dirname: str = "",
         filename_suffix: str = "",
         display_name: str = "",
         cleanup_keep: int | None = None,
@@ -222,7 +224,10 @@ class RuntimeState:
         if filename_suffix:
             filename = add_report_log_suffix(filename, filename_suffix)
         filename = sanitize_filename(filename)
-        output_path = self.log_dir / filename
+        output_dir = self.log_dir
+        if artifact_dirname:
+            output_dir = self.log_dir / sanitize_filename(artifact_dirname, fallback="unknown_task")
+        output_path = self._unique_child_path(output_dir, filename)
         generated_at = datetime.now()
         header = [
             f"生成时间: {generated_at.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -235,11 +240,30 @@ class RuntimeState:
         header.append(format_token_usage_text(token_usage))
         header.extend(["", str(fallback_text or "").strip(), ""])
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         output_path.write_text("\n".join(header), encoding="utf-8")
-        self.cleanup_saved_artifacts(self.log_dir, keep=cleanup_keep)
+        if output_dir != self.log_dir:
+            output_dir.touch(exist_ok=True)
+            self.cleanup_saved_artifact_directories(self.log_dir, keep=cleanup_keep)
+        else:
+            self.cleanup_saved_artifacts(self.log_dir, keep=cleanup_keep)
         logger.warning("[%s] 已保存最终报告日志: %s", PLUGIN_NAME, output_path)
         return output_path
+
+    @staticmethod
+    def _unique_child_path(directory: Path, filename: str) -> Path:
+        output_path = directory / filename
+        if not output_path.exists():
+            return output_path
+
+        stem = output_path.stem
+        suffix = output_path.suffix
+        index = 1
+        while True:
+            candidate = directory / f"{stem}_{index}{suffix}"
+            if not candidate.exists():
+                return candidate
+            index += 1
 
     def cleanup_saved_artifacts(self, directory: Path, *, keep: int | None = None) -> None:
         keep_count = self.settings.max_saved_artifacts if keep is None else keep
@@ -256,6 +280,25 @@ class RuntimeState:
                 path.unlink()
             except Exception as exc:
                 logger.warning("[%s] 清理旧文件失败: %s (%s)", PLUGIN_NAME, path, exc)
+
+    def cleanup_saved_artifact_directories(self, directory: Path, *, keep: int | None = None) -> None:
+        keep_count = self.settings.max_saved_artifacts if keep is None else keep
+        if keep_count <= 0 or not directory.exists():
+            return
+
+        artifacts = [path for path in directory.iterdir() if path.is_dir() or path.is_file()]
+        if len(artifacts) <= keep_count:
+            return
+
+        artifacts.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+        for path in artifacts[keep_count:]:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except Exception as exc:
+                logger.warning("[%s] 清理旧任务结果失败: %s (%s)", PLUGIN_NAME, path, exc)
 
     def build_push_append_text(
         self,

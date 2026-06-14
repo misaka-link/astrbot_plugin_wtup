@@ -80,7 +80,7 @@ mode: commit
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
-- `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/`、`task_logs/` 目录保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
+- `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 
 `github_token` 获取位置：
 
@@ -188,14 +188,14 @@ https://github.com/settings/tokens
 插件会在 AstrBot 插件数据目录中保存运行数据：
 
 - `state.json`：保存最近检查 commit、最近一次生成任务 `last_generated_task`，以及最近一次群推送任务 `last_pushed_task`。启用双报告时，任务状态的 `reports` 会记录每份报告的日志和图片路径，旧的 `log_path`、`image_path` 字段仍指向最终报告；`task_log_path` 会指向本次任务流水日志。
-- `logs/`：保存每次最终文本报告，不再记录图片文件路径和 GitHub compare Source 链接。日志头部会保存本次 token 消耗，格式为 `Token 消耗：总 X · 输入 Y · 输出 Z`。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。启用双报告时，会保存为 `旧版本_新版本_总分析前.log` 和 `旧版本_新版本_总分析后.log`。
+- `logs/`：按任务目录保存每次最终文本报告，目录名与 `analysis_cache/` 使用同一规则，例如 `c9ba0d7...2c83e3b_44e2166df6e2b3f2`，避免不同任务的同名报告互相覆盖。日志头部会保存本次 token 消耗，格式为 `Token 消耗：总 X · 输入 Y · 输出 Z`。若报告标题是 `版本->版本` 格式，文件名会保存为 `旧版本_新版本.log`，例如 `2.56.0.38_2.56.0.39.log`；否则使用本地时间命名，例如 `2026年6月12日03：00：18.log`。启用双报告时，会保存为 `旧版本_新版本_总分析前.log` 和 `旧版本_新版本_总分析后.log`；同一任务目录内若文件名已存在，会自动追加 `_1`、`_2` 等序号。
 - `task_logs/`：保存每次检查的全流程任务日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒_任务.log`。任务日志包含开始/结束、每个阶段、报告生成、推送结果，以及每次模型请求的输入 token 数量估算。
 - `errors/`：保存单个 Provider 请求失败、拆分重试、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback、Provider ID 和本次 compare/chunk 元数据；即使后续备用模型成功，主模型的失败原因也会单独记录。
 - `images/`：保存渲染后的报告图片。
 - `github_cache/`：保存 GitHub compare API 响应、原始 `.diff` 文本，以及模型工具调用 `read_changed_file` 拉取的目标 commit 完整文件。最新 commit 检查仍实时请求 GitHub，不走缓存；compare/diff/完整文件会先查本地缓存，未命中才请求 GitHub，请求成功后写入缓存。
 - `analysis_cache/`：保存已成功生成的模型分析结果。缓存目录名由“全部插件配置项 + 本次实际获取到的提交范围（例如 `c9ba0d7...2c83e3b` 对应的完整 base/head sha）”计算短 md5 特征值生成；同一配置和同一提交范围再次检查时会直接复用缓存分析结果，不再调用大模型。命中缓存时仍会重新渲染、保存并按当前命令/推送目标输出报告，任务日志会记录缓存目录和特征值；失败或需复核的分析结果不会写入该缓存。
 
-`max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件；`github_cache/` 和 `analysis_cache/` 不受该数量限制影响。
+`max_saved_artifacts` 默认会让 `logs/` 保留最新 5 个任务目录，让 `task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧项目；`github_cache/` 和 `analysis_cache/` 不受该数量限制影响。
 
 后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的 GitHub 缓存、模型分析缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
 
