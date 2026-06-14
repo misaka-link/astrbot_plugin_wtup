@@ -49,9 +49,6 @@ def normalize_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         "risks": ai_analysis["uncertainties"],
         "recommendation": clean_pagination_text(ai_analysis["recommendation"]),
         "tags": normalize_list(payload.get("tags"), limit=8),
-        "analysis_coverage": normalize_analysis_coverage(
-            payload.get("analysis_coverage") or payload.get("coverage")
-        ),
         "tool_calls": normalize_tool_calls(payload.get("tool_calls")),
     }
 
@@ -82,68 +79,6 @@ def normalize_ai_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         "uncertainties": uncertainties,
         "recommendation": recommendation,
     }
-
-def normalize_analysis_coverage(value: Any, *, limit: int = 1000) -> list[dict[str, Any]]:
-    if isinstance(value, dict):
-        items = value.values()
-    elif isinstance(value, list):
-        items = value
-    else:
-        return []
-
-    result: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        path = normalize_coverage_path(item.get("path") or item.get("filename") or item.get("file"))
-        if not path:
-            continue
-        status = normalize_coverage_status(item.get("status"))
-        covered_changes = normalize_list(
-            item.get("covered_changes") or item.get("changes") or item.get("analyzed_changes"),
-            limit=20,
-        )
-        evidence = normalize_list(
-            item.get("evidence") or item.get("markers") or item.get("references"),
-            limit=20,
-        )
-        notes = clean_pagination_text(item.get("notes") or item.get("note") or item.get("reason"))
-        result.append(
-            {
-                "path": path,
-                "status": status,
-                "covered_changes": covered_changes,
-                "evidence": evidence,
-                "notes": notes,
-            }
-        )
-        if len(result) >= limit:
-            break
-    return result
-
-def normalize_coverage_path(value: Any) -> str:
-    return re.sub(r"/+", "/", str(value or "").strip().replace("\\", "/"))
-
-def normalize_coverage_status(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    mapping = {
-        "已分析": "analyzed",
-        "完整分析": "analyzed",
-        "已覆盖": "analyzed",
-        "covered": "analyzed",
-        "done": "analyzed",
-        "待复核": "uncertain",
-        "不确定": "uncertain",
-        "需复核": "uncertain",
-        "partial": "uncertain",
-        "partially_analyzed": "uncertain",
-        "skipped": "skipped",
-        "跳过": "skipped",
-        "未分析": "skipped",
-    }
-    if text in {"analyzed", "uncertain", "skipped"}:
-        return text
-    return mapping.get(text, "uncertain")
 
 def normalize_update_sections(value: Any, *, section_limit: int = 8, item_limit: int = 20) -> list[dict[str, Any]]:
     if not isinstance(value, list):

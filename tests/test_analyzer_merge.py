@@ -19,7 +19,6 @@ from wtup.analyzer import (
     extract_token_usage,
     llm_failure_reason,
     merge_chunk_analyses,
-    normalize_analysis_coverage,
     refine_chunk_analyses,
     refine_merged_analysis,
     request_llm,
@@ -151,60 +150,6 @@ class AnalyzerMergeTest(unittest.TestCase):
         uncertainties = merged["ai_analysis"]["uncertainties"]
         self.assertEqual(item_text, "具体参数未在本次 diff 中出现")
         self.assertEqual(uncertainties, ["本次 diff 缺少参数，需要复核"])
-
-    def test_analysis_coverage_is_normalized(self) -> None:
-        coverage = normalize_analysis_coverage(
-            [
-                {
-                    "filename": r"dir\\a.blkx",
-                    "status": "已分析",
-                    "changes": ["本批diff调整参数"],
-                    "markers": ["foo = 1"],
-                    "reason": "当前分片已核对",
-                }
-            ]
-        )
-
-        self.assertEqual(
-            coverage,
-            [
-                {
-                    "path": "dir/a.blkx",
-                    "status": "analyzed",
-                    "covered_changes": ["本次 diff 调整参数"],
-                    "evidence": ["foo = 1"],
-                    "notes": "本次 diff 已核对",
-                }
-            ],
-        )
-
-    def test_merge_adds_uncertain_coverage_for_missing_files(self) -> None:
-        summary = make_summary()
-        payload = analysis("武器调整", "第一项")
-        payload["analysis_coverage"] = [
-            {
-                "path": "a.blkx",
-                "status": "analyzed",
-                "covered_changes": ["第一项"],
-                "evidence": ["+a"],
-                "notes": "",
-            }
-        ]
-
-        merged = merge_chunk_analyses(
-            summary,
-            summary.chunks[:2],
-            [
-                ChunkAnalysis(1, 2, payload),
-                ChunkAnalysis(2, 2, analysis("武器调整", "第二项")),
-            ],
-        )
-
-        coverage = merged["analysis_coverage"]
-        self.assertEqual([item["path"] for item in coverage], ["a.blkx", "b.blkx"])
-        self.assertEqual(coverage[0]["status"], "analyzed")
-        self.assertEqual(coverage[1]["status"], "uncertain")
-        self.assertIn("模型未返回", coverage[1]["notes"])
 
     def test_final_report_subtitle_has_no_part_label(self) -> None:
         chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
@@ -414,7 +359,6 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.calls, 1)
         self.assertEqual(refined["summary"], "二次整理摘要")
         self.assertEqual(refined["importance"], "高")
-        self.assertEqual([item["path"] for item in refined["analysis_coverage"]], ["a.blkx", "b.blkx", "c.blkx"])
         self.assertIn("请总结更新。", context.kwargs[0]["prompt"])
 
     async def test_refine_merged_analysis_uses_summary_provider(self) -> None:

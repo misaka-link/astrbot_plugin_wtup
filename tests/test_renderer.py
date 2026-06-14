@@ -101,45 +101,6 @@ class RendererFooterNoteTest(unittest.TestCase):
         self.assertNotIn("Source:", text)
         self.assertNotIn("https://github.com/example/repo/compare/base...head", text)
 
-    def test_render_plain_text_includes_analysis_coverage(self) -> None:
-        summary = DiffSummary(
-            base_sha="base123",
-            head_sha="head456",
-            compare_url="",
-            total_commits=1,
-            total_files=1,
-            additions=1,
-            deletions=0,
-            changed_files=1,
-            commits=[],
-            files=[],
-            chunks=[],
-        )
-        chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
-
-        text = render_plain_text(
-            summary,
-            chunk,
-            {
-                "summary": "摘要",
-                "update_sections": [],
-                "analysis_coverage": [
-                    {
-                        "path": "a.blkx",
-                        "status": "analyzed",
-                        "covered_changes": ["参数 foo 从 1 改为 2"],
-                        "evidence": ["foo = 2"],
-                        "notes": "",
-                    }
-                ],
-            },
-        )
-
-        self.assertIn("分析覆盖清单:", text)
-        self.assertIn("- [已分析] a.blkx", text)
-        self.assertIn("改动: 参数 foo 从 1 改为 2", text)
-        self.assertIn("证据: foo = 2", text)
-
 
 if __name__ == "__main__":
     unittest.main()
