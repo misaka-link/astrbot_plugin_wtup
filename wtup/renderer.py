@@ -16,6 +16,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME
+from .analysis.normalize import normalize_analysis_coverage
 from .diff_collector import DiffChunk, DiffSummary, short_sha
 from .token_usage import format_token_usage_text
 
@@ -142,6 +143,10 @@ def render_plain_text(
     recommendation = str(ai_analysis.get("recommendation") or analysis.get("recommendation") or "").strip()
     if recommendation:
         lines.append(f"建议: {recommendation}")
+    coverage_lines = render_plain_analysis_coverage(analysis)
+    if coverage_lines:
+        lines.append("")
+        lines.extend(coverage_lines)
     return "\n".join(lines)
 
 
@@ -233,6 +238,37 @@ def render_plain_update_items(items: list[dict[str, Any]], *, indent: int) -> li
         children = item.get("children") if isinstance(item.get("children"), list) else []
         lines.extend(render_plain_update_items(children, indent=indent + 1))
     return lines
+
+def render_plain_analysis_coverage(analysis: dict[str, Any]) -> list[str]:
+    coverage = normalize_analysis_coverage(analysis.get("analysis_coverage"))
+    if not coverage:
+        return []
+
+    lines = ["分析覆盖清单:"]
+    for item in coverage:
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        status = render_coverage_status(item.get("status"))
+        lines.append(f"- [{status}] {path}")
+        changes = [str(value).strip() for value in item.get("covered_changes") or [] if str(value or "").strip()]
+        evidence = [str(value).strip() for value in item.get("evidence") or [] if str(value or "").strip()]
+        notes = str(item.get("notes") or "").strip()
+        if changes:
+            lines.append(f"  改动: {'；'.join(changes)}")
+        if evidence:
+            lines.append(f"  证据: {'；'.join(evidence)}")
+        if notes:
+            lines.append(f"  备注: {notes}")
+    return lines if len(lines) > 1 else []
+
+def render_coverage_status(value: Any) -> str:
+    status = str(value or "").strip()
+    return {
+        "analyzed": "已分析",
+        "uncertain": "待复核",
+        "skipped": "未分析",
+    }.get(status, "待复核")
 
 
 def render_ai_analysis(analysis: dict[str, Any]) -> str:

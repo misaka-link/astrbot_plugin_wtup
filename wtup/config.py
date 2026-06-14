@@ -14,20 +14,54 @@ REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"
 BRANCH_NAME = "master"
 DEFAULT_INTERVAL_MINUTES = 30
 DEFAULT_FOOTER_NOTE = "[gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine)"
-DEFAULT_ANALYSIS_PROMPT = (
-    "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
-    "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
-    "写作 英文名(中文名)，如载具名称有特殊字符也要保留。请注意改动可能并非全部游戏模式，"
-    "此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。"
-    "必须遵守后续系统给出的 JSON 输出格式要求。"
-)
-DEFAULT_SUMMARY_PROMPT = (
-    "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
-    "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
-    "写作 英文名(中文名) 如载具名称有特殊字符要保留。请注意改动可能并非全部游戏模式，"
-    "此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。"
-    "必须遵守后续系统给出的 JSON 输出格式要求。"
-)
+DEFAULT_ANALYSIS_PROMPT = """请分析 War Thunder Datamine 的 GitHub commit 更新内容。你是分片分析模型，只负责当前输入中可见的 diff 内容；最终报告会由程序和总结模型合并。
+
+核心目标：完整、准确、可核对。必须逐文件、逐条分析当前输入中的全部可见改动，不得因为改动很小、看似内部调整、纯文本、本地化、重命名、新增/删除文件、格式变化或数值微调而跳过。
+
+更新条目要求：
+1. 按 War Thunder Datamine 更新日志风格整理，先列“更新条目”，再给出 AI 分析。
+2. 每条改动必须保留关键细节：对象名称、参数名、旧值/新值、新增/删除项、文本键、文件语义或机制变化。
+3. 涉及参数时，参数名后要用圆括号补充中文含义，例如 uncageBeforeLaunch (发射前解除陀螺锁定)。无法可靠判断含义时写“不确定”，不要编造。
+4. 涉及载具、武器、弹药、挂载、改装件、乘员组或装备时，必须尽量写出完整名称；能判断中英文时使用 英文原名(中文译名)。禁止用“部分载具”“某些装备”代替明确对象。
+5. 每条改动都要说明可能影响：会怎样影响游戏内表现、手感、平衡、经济、任务、UI 或玩家理解。若没有明显直接影响，明确写“对游戏表现无明显直接影响”。
+
+分类要求：
+1. 使用清晰中文分类，例如“空中载具”“地面载具”“直升机”“武器/弹药”“经济/科技树”“地图/任务”“文本/UI”“其他变化”“水面舰艇”。
+2. 无法明确归类的内容放入“其他变化”。
+3. 水面舰艇相关内容放在所有分类最后；没有内容的分类省略。
+
+新覆盖清单要求：
+1. 必须配合插件后续 JSON 协议输出 analysis_coverage。
+2. analysis_coverage 是防遗漏清单，不是正文；当前输入中的每个文件都必须有独立记录，path 必须与输入文件名完全一致。
+3. 只有确认该文件所有可见改动都已经写入 update_sections 或 ai_analysis，才能标记 analyzed。
+4. 如果只分析了一部分、上下文不足、影响不明确或工具结果不足，标记 uncertain，并在 notes 写明原因。
+5. covered_changes 必须列出该文件已经覆盖的改动点；evidence 必须写能回指 diff 的参数名、实体名、文本键、文件片段或数值变化，不能只写“已检查”。
+
+语言与边界：
+1. 全程中文，信息优先，语气可以有《战争雷霆》玩家熟悉的轻微吐槽，但不要牺牲清晰度。
+2. 不要输出 Markdown 代码块，不要输出 JSON 之外的解释。
+3. 不要在最终内容里写“当前分片”“本批 diff”“第几批”等内部拆分语境；统一说“本次 diff”。
+4. 不确定的信息写入 uncertainties，不要猜测、不要补充输入中没有的事实。"""
+DEFAULT_SUMMARY_PROMPT = """你是最终整理模型，只负责基于已经给出的分片分析 JSON 或程序初步合并 JSON 做去重、合并和排版整理。不要重新分析原始 diff，不要新增输入中没有的事实，不要扩大解释。
+
+你的任务只有这些：
+1. 合并重复条目：删除完全重复内容，合并同一对象、同一参数或同一机制的近似表述。
+2. 保留独立改动：不同文件、不同对象、不同参数、不同数值、不同文本键或不同影响的内容不能因为看起来相似就删掉。
+3. 整理分类顺序：使用清晰中文分类；无法归类放入“其他变化”；水面舰艇相关内容放在最后；空分类省略。
+4. 压缩冗余表达：让正文更适合最终推送，减少重复句、分片语境和过长说明，但必须保留关键细节、数值变化、对象名称和影响判断。
+5. 整理 AI 分析：changed_content、player_impact、uncertainties 只做归纳去重，不重新发明结论；已有不确定点和分析失败信息必须保留。
+
+analysis_coverage 硬性要求：
+1. 必须完整保留输入中已有的 analysis_coverage，不能删除、合并、改名或压缩任何 path。
+2. 不要把多个文件合成一个 coverage 项；每个 path 仍然独立存在。
+3. 不要把 uncertain/skipped 擅自改成 analyzed；除非输入中已经明确证明该文件所有可见改动都被覆盖。
+4. covered_changes、evidence、notes 中已有的信息要保留；可以去重和轻微润色，但不能抹掉证据或复核原因。
+5. 如果发现 coverage 中某个文件的独立改动没有出现在正文，应优先把该改动补回 update_sections，而不是删除 coverage。
+
+输出风格：
+1. 全程中文，只输出插件要求的 JSON，不要输出 Markdown 代码块、前言或解释。
+2. 最终报告要像一次完整更新，不要出现“分片”“本批”“当前批次”“Part”等内部流程词。
+3. 如果输入信息不足，只保留“不确定/需复核”的说明；不要编造载具名称、参数含义、游戏影响或版本结论。"""
 DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
     "{version_range} 分析完成\n"
     "消耗token:{token_count}\n"
@@ -36,9 +70,12 @@ DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
     "总结模型:{summary_model}"
 )
 DEFAULT_TOOL_CALL_PROMPT = (
-    "当当前分片不足以判断关联挂载、完整参数或同名配置时，可以通过 tool_calls 申请补充上下文。"
-    "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch、read_changed_file、search_changed_files、list_related_files。"
-    "不要请求无关路径，不要为了普通概括请求工具。"
+    "当当前分片不足以判断关联挂载、完整参数、同名配置、实体归属、参数含义，"
+    "或 analysis_coverage 缺少可回指 diff 的证据时，可以通过 tool_calls 申请补充上下文。"
+    "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch 查看变更片段，"
+    "必要时用 read_changed_file 读取目标提交文件全文，用 search_changed_files 搜索参数名/实体名/文本键，"
+    "用 list_related_files 查找同名或强关联文件。不要请求无关路径，不要为了普通概括请求工具；"
+    "如果工具结果仍不足，必须在 uncertainties 和 analysis_coverage.notes 中标记待复核。"
 )
 
 

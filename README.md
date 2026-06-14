@@ -62,8 +62,8 @@ mode: commit
 - `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制` 和 `/wtup_check 强制全部`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
-- `analysis_prompt`：分析提示词，默认要求按 War Thunder Datamine 更新日志风格逐条覆盖全部改动，并补充中文说明和实际影响。
-- `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果，默认同样要求不遗漏分片中的任何改动。
+- `analysis_prompt`：分析提示词，默认要求分片分析模型逐文件、逐条覆盖当前输入中的全部可见改动，并补充中文说明、实际影响和可核对证据。插件还会追加固定输出协议，要求模型在 `analysis_coverage` 中逐文件标记已分析内容、证据和待复核原因。
+- `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果，默认只基于已有分片 JSON 做去重、合并和排版整理，不重新分析原始 diff，不新增输入中没有的事实。插件会要求总结模型保留 `analysis_coverage` 覆盖清单，不得删除或压缩已标记的文件路径。
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
 - `enable_pre_summary_report`：是否生成分析前报告，默认关闭。开启后且总结模型也开启时，会生成总分析模型分析前和分析后的两份报告。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
@@ -78,7 +78,7 @@ mode: commit
 - `max_tool_call_rounds`：每个分片最多工具调用轮数，默认 2；设置为 0 等同关闭补充上下文分析。
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
-- `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
+- `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。默认允许模型在关联挂载、完整参数、同名配置、实体归属、参数含义或 `analysis_coverage` 缺少证据时申请工具结果。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 
@@ -137,6 +137,18 @@ https://github.com/settings/tokens
 `max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
+
+## 模型分析覆盖清单
+
+每次分片分析都会要求模型在 JSON 顶层返回 `analysis_coverage`。该字段不是玩家正文，而是防遗漏检查清单；每个变更文件都必须有一条记录，包含：
+
+- `path`：必须与本次 diff 文件路径完全一致。
+- `status`：只能是 `analyzed`、`uncertain` 或 `skipped`。
+- `covered_changes`：该文件已经写入报告正文或 AI 分析的改动点。
+- `evidence`：能回指到 diff 的参数名、实体名、文本键、文件片段或数值变化。
+- `notes`：不确定、跳过或对游戏表现无明显直接影响的说明。
+
+只有确认某个文件的所有可见改动都已经进入 `update_sections` 或 `ai_analysis`，模型才能把它标记为 `analyzed`。如果模型没有返回某个文件的覆盖标记，程序合并时会自动补为 `uncertain`；如果该文件所在分片分析失败，则补为 `skipped`。这些标记会随分片结果和总结模型结果继续保留，并在最终 `.log` 文本报告末尾输出“分析覆盖清单”，方便核对哪些内容已经分析、哪些内容仍需人工复核。
 
 `enable_streaming_llm_call` 默认关闭，关闭时继续使用原有 `context.llm_generate` 非流式调用。开启后，插件会优先通过 AstrBot Provider 的 `text_chat_stream` 流式接口请求模型，并把流式片段聚合成完整响应再进入 JSON 解析、修复、重试和 token 统计流程。该开关适用于仅支持流式请求的服务；如果未配置 Provider ID 且无法定位可用流式 Provider，插件会记录 warning 并回退为非流式请求。
 

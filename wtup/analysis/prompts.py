@@ -46,6 +46,30 @@ tool_calls 示例：
 如果不需要补充上下文，请省略 tool_calls 或输出空数组。不要为了普通概括请求工具。{remaining_text}
 """.rstrip()
 
+def _analysis_coverage_schema_text() -> str:
+    return """
+  "analysis_coverage": [
+    {
+      "path": "必须逐字使用输入文件列表中的 filename",
+      "status": "analyzed/uncertain/skipped",
+      "covered_changes": ["已经写入 update_sections 或 ai_analysis 的本文件改动点"],
+      "evidence": ["用于证明已分析的参数名、实体名、文本键、文件片段或其他线索"],
+      "notes": "不确定或跳过原因；已完整分析时可为空"
+    }
+  ],
+""".rstrip()
+
+def _analysis_coverage_requirements(source_name: str) -> str:
+    return f"""
+覆盖清单硬性要求：
+1. JSON 顶层必须包含 analysis_coverage，用来标记已经分析过的内容；该字段是防遗漏检查，不是给玩家看的正文。
+2. analysis_coverage 必须逐文件覆盖{source_name}里的每一个 filename/path，不能按目录、分类或“多个文件”合并，不能遗漏空 patch、纯文本、重命名、新增、删除或格式微调。
+3. path 必须与输入文件列表完全一致；status 只能是 analyzed、uncertain、skipped。
+4. 只有确认该文件所有可见改动都已经进入 update_sections 或 ai_analysis 时，才可标为 analyzed；只分析了一部分、影响不明确或缺少上下文时必须标为 uncertain，并在 notes 写明原因。
+5. covered_changes 要列出本文件已覆盖的改动点；evidence 要写能回指到 diff 的参数名、实体名、文本键、文件名片段或数值变化，不能只写“已检查”。
+6. 如果某个文件没有可面向玩家描述的变化，也必须在 analysis_coverage 中标记，并说明“对游戏表现无明显直接影响”或需要复核的原因。
+""".strip()
+
 def build_prompt(settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> str:
     return f"""
 {_analysis_prompt_text(settings)}
@@ -85,6 +109,7 @@ JSON 字段如下：
     "uncertainties": ["不确定点、需要继续观察的地方"],
     "recommendation": "是否建议玩家关注/更新，以及原因"
   }},
+{_analysis_coverage_schema_text()}
   "tags": ["标签1", "标签2"]
 }}
 
@@ -102,6 +127,7 @@ JSON 字段如下：
 11. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 12. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 13. 当前是内部模型请求第 {chunk.index}/{chunk.total} 批；该信息只用于你理解输入范围，最终报告会由程序合并，不要输出批次信息。
+{_analysis_coverage_requirements("当前分片文件列表")}
 {_tool_protocol_text(settings, remaining_rounds=getattr(settings, "max_tool_call_rounds", 0))}
 
 以下是 GitHub 变更数据：
@@ -149,6 +175,7 @@ JSON 字段如下：
     "uncertainties": ["不确定点、需要继续观察的地方"],
     "recommendation": "是否建议玩家关注/更新，以及原因"
   }},
+{_analysis_coverage_schema_text()}
   "tags": ["标签1", "标签2"]
 }}
 
@@ -158,6 +185,7 @@ JSON 字段如下：
 3. 如果上次输出无法判断实际改动，生成需复核条目，并把原因写入 uncertainties。
 4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 5. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
+{_analysis_coverage_requirements("当前分片文件列表")}
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 当前分片: {chunk.index}/{chunk.total}
@@ -203,6 +231,7 @@ def build_tool_refinement_prompt(
 3. 如果工具结果被拒绝、未找到、截断或 GitHub 拉取失败，要把影响写入 uncertainties。
 4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 5. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
+{_analysis_coverage_requirements("当前分片文件列表")}
 {_tool_protocol_text(settings, remaining_rounds=remaining_rounds)}
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
@@ -261,6 +290,7 @@ JSON 字段如下：
     "uncertainties": ["不确定点、需要继续观察的地方"],
     "recommendation": "是否建议玩家关注/更新，以及原因"
   }},
+{_analysis_coverage_schema_text()}
   "tags": ["标签1", "标签2"]
 }}
 
@@ -275,6 +305,8 @@ JSON 字段如下：
 8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
 9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
 10. 如果初步合并 JSON 中有分析失败或信息不足的内容，要保留到 uncertainties。
+{_analysis_coverage_requirements("初步合并 JSON 的 analysis_coverage")}
+11. 你可以整理 update_sections 和 ai_analysis，但不得删除、改名或压缩 analysis_coverage 中已有的文件路径；若原覆盖状态为 uncertain 或 skipped，必须保留该状态和原因。
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 提交数: {summary.total_commits}
@@ -337,6 +369,7 @@ JSON 字段如下：
     "uncertainties": ["不确定点、需要继续观察的地方"],
     "recommendation": "是否建议玩家关注/更新，以及原因"
   }},
+{_analysis_coverage_schema_text()}
   "tags": ["标签1", "标签2"]
 }}
 
@@ -351,6 +384,8 @@ JSON 字段如下：
 8. changed_content、player_impact、uncertainties 每个数组最多 5 条，每条尽量短。
 9. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
 10. 程序合并失败原因和分片分析失败信息必须保留到 uncertainties。
+{_analysis_coverage_requirements("分片分析数据中每个 chunk 的 files")}
+11. 你可以整理 update_sections 和 ai_analysis，但不得删除、改名或压缩已有的 analysis_coverage 文件路径；若原覆盖状态为 uncertain 或 skipped，必须保留该状态和原因。
 
 分片分析数据:
 {chunk_json}

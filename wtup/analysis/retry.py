@@ -17,7 +17,7 @@ from .errors import record_model_error
 from .fallback import fallback_analysis
 from .merge import merge_chunk_analyses, order_chunk_results
 from .models import ChunkAnalysis, TokenUsage
-from .normalize import normalize_analysis, parse_analysis_json
+from .normalize import normalize_analysis, normalize_analysis_coverage, parse_analysis_json
 from .prompts import build_chunk_refinement_prompt, build_prompt, build_refinement_prompt, build_tool_refinement_prompt
 from .repair import parse_or_repair_analysis, parse_or_repair_analysis_with_usage
 from .responses import ensure_usable_llm_response, extract_response_text, extract_token_usage
@@ -70,7 +70,7 @@ async def refine_merged_analysis_with_usage(
         parsed = parse_analysis_json(text)
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
-        return parsed, token_usage
+        return preserve_analysis_coverage(parsed, merged_analysis), token_usage
     except Exception as exc:
         record_model_error(settings, "summary_refine_failed", exc, summary=summary)
         logger.warning("[%s] 总结模型分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
@@ -502,6 +502,7 @@ async def refine_chunk_analyses_with_usage(
 ) -> tuple[dict[str, Any], TokenUsage]:
     prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
     token_usage = TokenUsage()
+    source_analysis = merge_coverage_source_from_chunks(summary, chunks, results)
     try:
         response = await request_llm(
             context,
@@ -516,7 +517,7 @@ async def refine_chunk_analyses_with_usage(
         parsed = parse_analysis_json(text)
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
-        return parsed, token_usage
+        return preserve_analysis_coverage(parsed, source_analysis), token_usage
     except Exception as exc:
         record_model_error(
             settings,
@@ -527,9 +528,76 @@ async def refine_chunk_analyses_with_usage(
         )
         logger.warning("[%s] 分片总结模型分析失败，使用兜底报告: %s", PLUGIN_NAME, exc)
         return (
-            fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。"),
+            preserve_analysis_coverage(
+                fallback_analysis("模型分片分析已完成，但程序合并和总结模型分析均失败，需要结合 GitHub 原始 diff 复核。"),
+                source_analysis,
+            ),
             token_usage,
         )
+
+def preserve_analysis_coverage(analysis: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_analysis(analysis)
+    source_coverage = normalize_analysis_coverage(source.get("analysis_coverage"))
+    if not source_coverage:
+        return normalized
+
+    analysis_coverage = normalize_analysis_coverage(normalized.get("analysis_coverage"))
+    if not analysis_coverage:
+        normalized["analysis_coverage"] = source_coverage
+        return normalized
+
+    normalized["analysis_coverage"] = combine_analysis_coverage(source_coverage, analysis_coverage)
+    return normalized
+
+def combine_analysis_coverage(
+    source_coverage: list[dict[str, Any]],
+    analysis_coverage: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index_by_path: dict[str, int] = {}
+    for item in [*source_coverage, *analysis_coverage]:
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        if path not in index_by_path:
+            index_by_path[path] = len(merged)
+            merged.append(dict(item))
+            continue
+        current = merged[index_by_path[path]]
+        current["status"] = stronger_coverage_status(current.get("status"), item.get("status"))
+        current["covered_changes"] = unique_texts(current.get("covered_changes"), item.get("covered_changes"))[:20]
+        current["evidence"] = unique_texts(current.get("evidence"), item.get("evidence"))[:20]
+        current["notes"] = "; ".join(unique_texts([current.get("notes")], [item.get("notes")]))
+    return normalize_analysis_coverage(merged)
+
+def stronger_coverage_status(left: Any, right: Any) -> str:
+    rank = {"skipped": 0, "uncertain": 1, "analyzed": 2}
+    left_text = str(left or "uncertain")
+    right_text = str(right or "uncertain")
+    return left_text if rank.get(left_text, 1) >= rank.get(right_text, 1) else right_text
+
+def unique_texts(*groups: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for group in groups:
+        values = group if isinstance(group, list) else [group]
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+    return result
+
+def merge_coverage_source_from_chunks(
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+) -> dict[str, Any]:
+    try:
+        return merge_chunk_analyses(summary, chunks, results)
+    except Exception:
+        return {"analysis_coverage": []}
 
 def sum_token_usage(usages: Any) -> TokenUsage:
     total = TokenUsage()
