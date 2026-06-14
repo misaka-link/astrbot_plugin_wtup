@@ -60,17 +60,17 @@ mode: commit
 - `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制` 和 `/wtup_check 强制全部`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
-- `analysis_prompt`：分析提示词。
-- `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果。
+- `analysis_prompt`：分析提示词，默认要求按 War Thunder Datamine 更新日志风格逐条覆盖全部改动，并补充中文说明和实际影响。
+- `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果，默认同样要求不遗漏分片中的任何改动。
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
 - `enable_pre_summary_report`：是否生成分析前报告，默认关闭。开启后且总结模型也开启时，会生成总分析模型分析前和分析后的两份报告。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`，`*_model_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
-- `max_files_per_report`：每次模型请求最多文件数，默认 0 表示不限制。
-- `max_input_tokens`：每次模型请求最大 token 输入，默认 0 表示不限制，支持最多两位小数。
-- `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`。
+- `max_files_per_report`：每次模型请求最多文件数，默认 150。
+- `max_input_tokens`：每次模型请求最大 token 输入，默认 0.1，支持最多两位小数。
+- `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`，默认 `M`。
 - `max_retry_count`：最大重试次数，默认 2。每次重试都会把失败任务按文件边界拆成两半。
 - `enable_model_tool_calls`：是否允许模型通过 JSON 协议申请补充上下文，默认关闭。
 - `max_tool_call_rounds`：每个分片最多工具调用轮数，默认 2；设置为 0 等同关闭补充上下文分析。
@@ -124,7 +124,7 @@ https://github.com/settings/tokens
 
 ## 模型请求拆分规则
 
-`max_files_per_report` 和 `max_input_tokens` 默认都是 `0`，表示不限制。
+`max_files_per_report` 默认是 `150`，`max_input_tokens` 默认是 `0.1M`。
 
 如果其中任意一个设置为大于 `0`，插件会先按文件关联性分组，再按 `max_files_per_report` 把分组打包成基础分片，设置为大于 `0` 时每个基础分片都不会超过该文件数上限。关联性会优先考虑同目录、同后缀、文件名归一后相近的改动，也会尽量把跨目录但同一实体名的文件放在一起。随后插件再按完整模型输入估算 token；某一次请求超过 `max_input_tokens` 时，会在保证文件完整性的前提下继续拆分该基础分片，并优先在关联分组边界切开。每次请求都会单独调用一次分析模型，所有分析结果会按分片顺序合并成报告；默认最终只生成一张图片并推送一次。
 
@@ -169,11 +169,10 @@ https://github.com/settings/tokens
 开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息；使用 `/wtup_check 强制` 时，这条文字会发送到当前群。默认模板示例：
 
 ```text
-{version_range} 分析完成
-消耗token:{token_count}
-耗时{elapsed_duration}
-分析模型:{analysis_model}
-总结模型:{summary_model}
+{version_range} 分析
+消耗token:{token_count}  耗时: {耗时}
+分析模型:{analysis_model_name}
+总结模型:{summary_model_name}
 ```
 
 `{token_count}` 表示对应报告实际模型调用返回的 `total_tokens` 累计值，包含分析模型、总结模型、JSON 修复和拆分重试产生的额外请求。`{elapsed_duration}` 和 `{耗时}` 表示从检查开始到报告生成的耗时，直接输出 `x分x秒`；`{elapsed_minutes}` 仍可用于兼容旧模板，表示向上取整后的分钟数。启用双报告时，分析前追加文字使用总结模型调用前的累计 token，且总结模型显示为 `未启动`；分析后追加文字使用包含总结模型在内的最终累计 token。`{analysis_model}` 和 `{summary_model}` 输出完整 Provider ID；`{analysis_model_name}` 和 `{summary_model_name}` 输出纯模型名，例如 `NewAPI-OpenAI/glm-5.1` 会显示为 `glm-5.1`。最近一次任务状态也会保存 `token_usage.prompt_tokens`、`token_usage.completion_tokens` 和 `token_usage.total_tokens` 明细。
