@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 try:
@@ -13,6 +15,7 @@ except ModuleNotFoundError:
 
 from ..config import PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from ..diff_collector import DiffChunk, DiffSummary
+from ..github_cache import GitHubCache
 from ..github_client import GitHubClient, GitHubRequestError
 
 
@@ -183,9 +186,21 @@ async def _read_changed_file(
             source = "github_cache"
         else:
             client = GitHubClient(token=settings.github_token, timeout=settings.timeout_seconds)
-            content = await _fetch_github_file_text(client, summary.head_sha, path)
+            disk_cache = _github_cache_from_settings(settings)
+            if disk_cache is None:
+                content = await _fetch_github_file_text(client, summary.head_sha, path)
+                source = "github"
+            else:
+                result = await asyncio.to_thread(
+                    disk_cache.get_file_text,
+                    REPO_FULL_NAME,
+                    summary.head_sha,
+                    path,
+                    lambda: client.get_file_text(REPO_FULL_NAME, summary.head_sha, path),
+                )
+                content = result.value
+                source = "github_cache" if result.source == "cache" else "github"
             cache[cache_key] = content
-            source = "github"
     except GitHubRequestError as exc:
         patch = str((file_info or {}).get("patch") or "").strip()
         if patch:
@@ -425,10 +440,15 @@ def _max_result_chars(settings: PluginConfig) -> int:
     return max(1000, int(getattr(settings, "max_tool_result_chars", 12000) or 12000))
 
 
+def _github_cache_from_settings(settings: PluginConfig) -> GitHubCache | None:
+    cache_dir = getattr(settings, "github_cache_dir", None)
+    if not cache_dir:
+        return None
+    return GitHubCache(Path(cache_dir), task_log_recorder=getattr(settings, "task_log_recorder", None))
+
+
 async def _fetch_github_file_text(client: GitHubClient, ref: str, path: str) -> str:
     try:
-        import asyncio
-
         return await asyncio.to_thread(client.get_file_text, REPO_FULL_NAME, ref, path)
     except GitHubRequestError:
         raise

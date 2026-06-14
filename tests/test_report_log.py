@@ -97,8 +97,11 @@ class ClearCacheFilesStartupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
             logs_dir = data_dir / "logs"
+            cache_dir = data_dir / "github_cache"
             logs_dir.mkdir()
+            cache_dir.mkdir()
             (logs_dir / "old.log").write_text("old", encoding="utf-8")
+            (cache_dir / "old.diff").write_text("diff", encoding="utf-8")
             (data_dir / "state.json").write_text("{}", encoding="utf-8")
             config = SavableConfig({"clear_cache_files": "开启"})
 
@@ -107,6 +110,7 @@ class ClearCacheFilesStartupTest(unittest.TestCase):
 
             self.assertTrue(data_dir.exists())
             self.assertFalse(logs_dir.exists())
+            self.assertFalse(cache_dir.exists())
             self.assertFalse((data_dir / "state.json").exists())
             self.assertFalse(config["clear_cache_files"])
             self.assertTrue(config.saved)

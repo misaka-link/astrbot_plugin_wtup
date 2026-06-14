@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -82,6 +83,7 @@ class PluginConfig:
         compare=False,
         repr=False,
     )
+    github_cache_dir: Path | None = field(default=None, compare=False, repr=False)
 
     @property
     def enable_summary_model(self) -> bool:

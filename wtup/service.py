@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from .analyzer import (
 )
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from .diff_collector import DiffChunk, build_diff_summary, short_sha
+from .github_cache import GitHubCache
 from .github_client import GitHubClient, GitHubRequestError
 from .notifier import push_admin_notification, push_log_file, push_report, push_text
 from .renderer import build_report_html, render_plain_text, render_report_image
@@ -105,16 +106,17 @@ class UpdateCheckService:
         error_dir: Path,
         template_path: Path,
         task_log_dir: Path | None = None,
+        github_cache_dir: Path | None = None,
         render_host: Any | None = None,
     ) -> None:
         self.context = context
-        self.settings = settings
         self.render_host = render_host if render_host is not None else self
         self.state_store = state_store
         self.image_dir = image_dir
         self.log_dir = log_dir
         self.error_dir = error_dir
         self.task_log_dir = task_log_dir if task_log_dir is not None else log_dir.parent / "task_logs"
+        self.github_cache_dir = github_cache_dir if github_cache_dir is not None else log_dir.parent / "github_cache"
         self.template_path = template_path
         self.runtime = RuntimeState(
             settings=settings,
@@ -123,11 +125,15 @@ class UpdateCheckService:
             error_dir=error_dir,
             task_log_dir=self.task_log_dir,
         )
+        self.github_cache = GitHubCache(self.github_cache_dir, task_log_recorder=self.runtime.record_task_log)
+        self.settings = self.with_runtime_hooks(settings)
         self._check_lock = asyncio.Lock()
 
     def with_runtime_hooks(self, settings: PluginConfig) -> PluginConfig:
+        settings = self.runtime.with_runtime_hooks(settings)
+        settings = replace(settings, github_cache_dir=self.github_cache_dir)
         self.runtime.settings = settings
-        return self.runtime.with_runtime_hooks(settings)
+        return settings
 
     async def check_once(
         self,
@@ -230,19 +236,36 @@ class UpdateCheckService:
                     "提交范围": f"{short_sha(previous_sha)}...{short_sha(latest.sha)}",
                 },
             )
-            compare_payload = await asyncio.to_thread(client.compare_commits, REPO_FULL_NAME, previous_sha, latest.sha)
+            compare_result = await asyncio.to_thread(
+                self.github_cache.get_compare,
+                REPO_FULL_NAME,
+                previous_sha,
+                latest.sha,
+                lambda: client.compare_commits(REPO_FULL_NAME, previous_sha, latest.sha),
+            )
+            compare_payload = compare_result.value
             logger.warning("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
             self.runtime.record_task_log(
                 "步骤 2/5 完成",
-                {"文件变更数": len(compare_payload.get("files", []))},
+                {"文件变更数": len(compare_payload.get("files", [])), "来源": compare_result.source},
             )
 
             logger.warning("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 3/5 开始", {"内容": "获取原始 diff"})
             try:
-                raw_diff_text = await asyncio.to_thread(client.compare_diff_text, REPO_FULL_NAME, previous_sha, latest.sha)
+                diff_result = await asyncio.to_thread(
+                    self.github_cache.get_diff,
+                    REPO_FULL_NAME,
+                    previous_sha,
+                    latest.sha,
+                    lambda: client.compare_diff_text(REPO_FULL_NAME, previous_sha, latest.sha),
+                )
+                raw_diff_text = diff_result.value
                 logger.warning("[%s] 已完成获取原始 diff", PLUGIN_NAME)
-                self.runtime.record_task_log("步骤 3/5 完成", {"原始 diff 字符数": len(raw_diff_text)})
+                self.runtime.record_task_log(
+                    "步骤 3/5 完成",
+                    {"原始 diff 字符数": len(raw_diff_text), "来源": diff_result.source},
+                )
             except GitHubRequestError as exc:
                 raw_diff_text = ""
                 logger.warning("[%s] 获取原始 diff 失败，使用 compare API 文件列表兜底: %s", PLUGIN_NAME, exc)

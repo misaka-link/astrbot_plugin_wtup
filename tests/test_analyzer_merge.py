@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -934,6 +935,61 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0].analysis["summary"], "GitHub 补充后分析")
         fetch.assert_called_once_with("gszabi99/War-Thunder-Datamine", "head456", "extra/foo.blkx")
         self.assertIn("FULL FILE CONTENT", context.prompts[1])
+
+    async def test_read_changed_file_reuses_disk_cache_between_runs(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = analysis("武器调整", "初次分析")
+        first["tool_calls"] = [
+            {"tool": "read_changed_file", "path": "extra/foo.blkx", "reason": "需要完整文件"}
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            settings = replace(
+                load_config({"enable_model_tool_calls": True, "max_tool_call_rounds": 1}),
+                github_cache_dir=base / "github_cache",
+            )
+            first_context = SequenceContext(
+                [
+                    json_response(first),
+                    json_response(analysis("武器调整", "GitHub 补充后分析")),
+                ]
+            )
+            with patch("wtup.analysis.tools.GitHubClient.get_file_text", return_value="FULL FILE CONTENT") as fetch:
+                results = await analyze_chunks(first_context, settings, single_summary)
+
+            self.assertEqual(results[0].analysis["summary"], "GitHub 补充后分析")
+            fetch.assert_called_once()
+            self.assertEqual(len(list((base / "github_cache" / "files" / "head456").glob("*.txt"))), 1)
+
+            second_context = SequenceContext(
+                [
+                    json_response(first),
+                    json_response(analysis("武器调整", "缓存补充后分析")),
+                ]
+            )
+            with patch(
+                "wtup.analysis.tools.GitHubClient.get_file_text",
+                side_effect=AssertionError("should use disk cache"),
+            ) as fetch_again:
+                results = await analyze_chunks(second_context, settings, single_summary)
+
+            self.assertEqual(results[0].analysis["summary"], "缓存补充后分析")
+            fetch_again.assert_not_called()
+            self.assertIn("FULL FILE CONTENT", second_context.prompts[1])
 
     async def test_tool_call_round_limit_adds_uncertainty(self) -> None:
         summary = make_summary()

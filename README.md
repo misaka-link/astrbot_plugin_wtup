@@ -40,6 +40,7 @@ mode: commit
 - `wtup/analysis/`：模型分析相关模块，包含提示词、模型请求、JSON 修复、失败重试、结果合并和结构标准化。
 - `wtup/analyzer.py`：兼容导出层，保留旧的 `wtup.analyzer` 导入路径。
 - `wtup/diff_collector.py`：GitHub compare/diff 数据整理和文件分片。
+- `wtup/github_cache.py`：GitHub compare、原始 diff 和补充上下文文件的落盘缓存。
 - `wtup/renderer.py`：报告 HTML、纯文本和图片渲染辅助。
 - `wtup/notifier.py`：群消息、文字消息和日志文件推送。
 - `templates/help_miku.html`：报告 HTML 骨架。
@@ -77,8 +78,8 @@ mode: commit
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
-- `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的缓存、日志、图片和状态文件，然后自动改回关闭。
-- `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/` 目录保留最新 5 个文件；设置为 0 表示不限制。
+- `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
+- `max_saved_artifacts`：插件文件最大保存数量，默认 5。分别限制 `logs/`、`images/`、`errors/`、`task_logs/` 目录保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 
 `github_token` 获取位置：
 
@@ -190,10 +191,11 @@ https://github.com/settings/tokens
 - `task_logs/`：保存每次检查的全流程任务日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒_任务.log`。任务日志包含开始/结束、每个阶段、报告生成、推送结果，以及每次模型请求的输入 token 数量估算。
 - `errors/`：保存单个 Provider 请求失败、拆分重试、JSON 修复和总结模型相关错误日志，文件名精确到秒，例如 `2026年6月12日09时49分02秒.log`。错误日志包含 stage、错误类型、错误文本、traceback、Provider ID 和本次 compare/chunk 元数据；即使后续备用模型成功，主模型的失败原因也会单独记录。
 - `images/`：保存渲染后的报告图片。
+- `github_cache/`：保存 GitHub compare API 响应、原始 `.diff` 文本，以及模型工具调用 `read_changed_file` 拉取的目标 commit 完整文件。最新 commit 检查仍实时请求 GitHub，不走缓存；compare/diff/完整文件会先查本地缓存，未命中才请求 GitHub，请求成功后写入缓存。
 
-`max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件。
+`max_saved_artifacts` 默认会让 `logs/`、`task_logs/`、`errors/`、`images/` 分别保留最新 5 个文件，超出数量会删除旧文件；`github_cache/` 不受该数量限制影响。
 
-后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
+后台开启 `clear_cache_files` 后，插件下次加载时会清空插件数据目录内已有的 GitHub 缓存、日志、图片和状态文件，并在清理后自动把开关改回关闭，避免后续每次启动重复清理。
 
 ## 首次运行
 
