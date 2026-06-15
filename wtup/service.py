@@ -333,6 +333,8 @@ class UpdateCheckService:
                 merged_analysis = analysis_cache_entry.merged_analysis
                 token_usage = analysis_cache_entry.token_usage
                 pre_summary_token_usage = analysis_cache_entry.pre_summary_token_usage
+                analysis_model_route = analysis_cache_entry.analysis_model_route
+                summary_model_route = analysis_cache_entry.summary_model_route
                 analysis_failure_reasons: list[str] = []
                 logger.warning(
                     "[%s] 分析结果缓存命中，跳过大模型请求: %s",
@@ -352,6 +354,8 @@ class UpdateCheckService:
                 token_usage = sum_token_usage(result.token_usage for result in chunk_results)
                 analysis_failure_reasons = chunk_failure_reasons(chunk_results)
                 pre_summary_token_usage = token_usage
+                analysis_model_route = self.runtime.current_model_provider_route("analysis")
+                summary_model_route: list[str] = []
                 merged_analysis: dict[str, Any] | None = None
                 try:
                     analysis = merge_chunk_analyses(summary, summary.chunks, chunk_results)
@@ -366,6 +370,7 @@ class UpdateCheckService:
                             analysis,
                         )
                         token_usage += summary_usage
+                        summary_model_route = self.runtime.current_model_provider_route("summary")
                 except Exception as exc:
                     logger.warning("[%s] 合并分片分析结果失败: %s", PLUGIN_NAME, exc)
                     analysis_failure_reasons.append(f"合并分片分析结果失败: {exc}")
@@ -387,6 +392,7 @@ class UpdateCheckService:
                             merge_error=str(exc),
                         )
                         token_usage += summary_usage
+                        summary_model_route = self.runtime.current_model_provider_route("summary")
                     else:
                         analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
                 if analysis_needs_review(analysis) and not analysis_failure_reasons:
@@ -401,6 +407,8 @@ class UpdateCheckService:
                     merged_analysis=merged_analysis,
                     token_usage=token_usage,
                     pre_summary_token_usage=pre_summary_token_usage,
+                    analysis_model_route=analysis_model_route,
+                    summary_model_route=summary_model_route,
                 )
             logger.warning(
                 "[%s] 模型真实 token 消耗: total=%d, prompt=%d, completion=%d",
@@ -505,6 +513,8 @@ class UpdateCheckService:
                         elapsed_minutes=elapsed_minutes,
                         elapsed_duration=elapsed_duration,
                         summary_model_enabled=summary_model_enabled and report.key == "final",
+                        analysis_model_route=analysis_model_route,
+                        summary_model_route=summary_model_route,
                     )
                 append_text = final_report.append_text
 

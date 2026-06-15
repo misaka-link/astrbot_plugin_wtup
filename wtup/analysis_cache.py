@@ -28,6 +28,8 @@ class AnalysisCacheEntry:
     merged_analysis: dict[str, Any] | None
     token_usage: TokenUsage
     pre_summary_token_usage: TokenUsage
+    analysis_model_route: list[str]
+    summary_model_route: list[str]
 
 
 class AnalysisResultCache:
@@ -91,6 +93,8 @@ class AnalysisResultCache:
             merged_analysis=merged_analysis,
             token_usage=_token_usage_from_payload(payload.get("token_usage")),
             pre_summary_token_usage=_token_usage_from_payload(payload.get("pre_summary_token_usage")),
+            analysis_model_route=_model_route_from_payload(payload.get("analysis_model_route")),
+            summary_model_route=_model_route_from_payload(payload.get("summary_model_route")),
         )
 
     def write(
@@ -103,6 +107,8 @@ class AnalysisResultCache:
         merged_analysis: dict[str, Any] | None,
         token_usage: TokenUsage,
         pre_summary_token_usage: TokenUsage,
+        analysis_model_route: list[str] | None = None,
+        summary_model_route: list[str] | None = None,
     ) -> Path | None:
         key = self.build_key(settings=settings, repo=repo, summary=summary)
         directory = self.directory_for(settings=settings, repo=repo, summary=summary)
@@ -120,6 +126,8 @@ class AnalysisResultCache:
             "merged_analysis": merged_analysis,
             "token_usage": token_usage.to_dict(),
             "pre_summary_token_usage": pre_summary_token_usage.to_dict(),
+            "analysis_model_route": _model_route_from_payload(analysis_model_route),
+            "summary_model_route": _model_route_from_payload(summary_model_route),
         }
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -211,6 +219,18 @@ def _token_usage_from_payload(value: Any) -> TokenUsage:
         completion_tokens=_as_int(value.get("completion_tokens")),
         total_tokens=_as_int(value.get("total_tokens")),
     )
+
+
+def _model_route_from_payload(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    route: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in route:
+            continue
+        route.append(text)
+    return route
 
 
 def _as_int(value: Any) -> int:

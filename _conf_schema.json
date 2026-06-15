@@ -111,7 +111,7 @@
   "push_append_text_template": {
     "type": "text",
     "description": "追加文字内容",
-    "hint": "报告图片推送后追加发送的文字模板。可用变量：{version_range}=版本范围，例如 2.56.0.38->2.56.0.39；{token_count}=对应报告模型调用累计 total_tokens，双报告时分析前为总结模型调用前 token、分析后为最终 token；{elapsed_duration} 或 {耗时}=从检查开始到报告生成的耗时，格式为 x分x秒；{elapsed_minutes}=耗时分钟数，向上取整；{analysis_model}=分析模型完整 Provider ID；{summary_model}=总结模型完整 Provider ID，未启用或分析前报告时为“未启动”；{analysis_model_name}=分析模型纯模型名，会取最后一个 / 后面的内容，例如 NewAPI-OpenAI/glm-5.1 显示 glm-5.1；{summary_model_name}=总结模型纯模型名。",
+    "hint": "报告图片推送后追加发送的文字模板。可用变量：{version_range}=版本范围，例如 2.56.0.38->2.56.0.39；{token_count}=对应报告模型调用累计 total_tokens，双报告时分析前为总结模型调用前 token、分析后为最终 token；{elapsed_duration} 或 {耗时}=从检查开始到报告生成的耗时，格式为 x分x秒；{elapsed_minutes}=耗时分钟数，向上取整；{analysis_model}=分析模型实际 Provider ID 链路；{summary_model}=总结模型实际 Provider ID 链路，未启用或分析前报告时为“未启动”；{analysis_model_name}=分析模型纯模型名链路，会取最后一个 / 后面的内容，例如 NewAPI-OpenAI/glm-5.1 -> NewAPI-Gemini/gemini-3.5-flash 显示 glm-5.1 -> gemini-3.5-flash；{summary_model_name}=总结模型纯模型名链路；{analysis_model_chain}/{summary_model_chain}/{analysis_model_chain_name}/{summary_model_chain_name}=对应链路变量别名。",
     "default": "{version_range} 分析\n消耗token:{token_count}  耗时: {耗时}\n分析模型:{analysis_model_name}\n总结模型:{summary_model_name}"
   },
   "footer_note": {

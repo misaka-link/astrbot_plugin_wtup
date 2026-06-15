@@ -40,6 +40,76 @@ class RuntimeAppendTextTest(unittest.TestCase):
 
             self.assertEqual(text, "耗时:2分5秒\n别名:2分5秒\n分钟:3")
 
+    def test_build_push_append_text_marks_provider_fallback_route(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            runtime = RuntimeState(
+                settings=load_config(
+                    {
+                        "push_append_text_template": (
+                            "分析:{analysis_model_name}\n"
+                            "总结:{summary_model_name}\n"
+                            "完整:{analysis_model_chain}"
+                        ),
+                    }
+                ),
+                state_store=StateStore(base / "state.json"),
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+            )
+
+            text = runtime.build_push_append_text(
+                analysis={"report_title": "2.56.0.38->2.56.0.39"},
+                token_count=150,
+                elapsed_minutes=3,
+                elapsed_duration="2分5秒",
+                summary_model_enabled=True,
+                analysis_model_route=["NewAPI-OpenAI/glm-5.1", "NewAPI-Gemini/gemini-3.5-flash"],
+                summary_model_route=["NewAPI-OpenAI/summary-main", "NewAPI-Gemini/summary-backup"],
+            )
+
+            self.assertEqual(
+                text,
+                "分析:glm-5.1 -> gemini-3.5-flash\n"
+                "总结:summary-main -> summary-backup\n"
+                "完整:NewAPI-OpenAI/glm-5.1 -> NewAPI-Gemini/gemini-3.5-flash",
+            )
+
+    def test_task_log_collects_provider_routes_by_purpose(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            runtime = RuntimeState(
+                settings=load_config({}),
+                state_store=StateStore(base / "state.json"),
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                task_log_dir=base / "task_logs",
+            )
+
+            runtime.start_task_log(manual=True, force_latest=True, send_to_groups=True)
+            runtime.record_task_log(
+                "模型请求开始",
+                {"用途": "分片分析", "Provider": "NewAPI-OpenAI/glm-5.1"},
+            )
+            runtime.record_task_log(
+                "模型请求开始",
+                {"用途": "分片分析", "Provider": "NewAPI-OpenAI/glm-5.1"},
+            )
+            runtime.record_task_log(
+                "模型请求开始",
+                {"用途": "分片分析", "Provider": "NewAPI-Gemini/gemini-3.5-flash"},
+            )
+            runtime.record_task_log(
+                "模型请求开始",
+                {"用途": "程序合并后总结", "Provider": "NewAPI-OpenAI/summary-main"},
+            )
+
+            self.assertEqual(
+                runtime.current_model_provider_route("analysis"),
+                ["NewAPI-OpenAI/glm-5.1", "NewAPI-Gemini/gemini-3.5-flash"],
+            )
+            self.assertEqual(runtime.current_model_provider_route("summary"), ["NewAPI-OpenAI/summary-main"])
+
     def test_task_log_records_model_request_details(self) -> None:
         with TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

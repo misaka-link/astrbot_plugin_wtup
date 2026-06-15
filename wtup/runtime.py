@@ -59,6 +59,11 @@ class RuntimeState:
         self._task_log_path: Path | None = None
         self._task_log_request_count = 0
         self._task_log_started_at = 0.0
+        self._model_provider_routes: dict[str, list[str]] = {
+            "analysis": [],
+            "summary": [],
+            "all": [],
+        }
 
     def with_runtime_hooks(self, settings: PluginConfig) -> PluginConfig:
         try:
@@ -99,6 +104,11 @@ class RuntimeState:
         self._task_log_path = output_path
         self._task_log_request_count = 0
         self._task_log_started_at = time.monotonic()
+        self._model_provider_routes = {
+            "analysis": [],
+            "summary": [],
+            "all": [],
+        }
         header = [
             "WT 更新检查任务日志",
             f"开始时间: {now.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -148,6 +158,7 @@ class RuntimeState:
             self._task_log_request_count += 1
             request_no = self._task_log_request_count
             payload = {"第几次模型请求": request_no, **payload}
+            self._record_model_provider_route(payload)
         elif "第几次模型请求" in payload:
             try:
                 request_no = int(payload["第几次模型请求"])
@@ -168,6 +179,22 @@ class RuntimeState:
         except Exception as exc:
             logger.warning("[%s] 写入任务日志失败: %s", PLUGIN_NAME, exc)
         return request_no
+
+    def current_model_provider_route(self, category: str = "all") -> list[str]:
+        return list(self._model_provider_routes.get(category, []))
+
+    def _record_model_provider_route(self, payload: dict[str, Any]) -> None:
+        provider = str(payload.get("Provider") or "").strip() or "默认模型"
+        purpose = str(payload.get("用途") or "").strip()
+        category = "summary" if "总结" in purpose else "analysis"
+        self._append_model_route("all", provider)
+        self._append_model_route(category, provider)
+
+    def _append_model_route(self, category: str, provider: str) -> None:
+        route = self._model_provider_routes.setdefault(category, [])
+        if provider in route:
+            return
+        route.append(provider)
 
     @staticmethod
     def _format_task_log_value(value: Any) -> str:
@@ -308,12 +335,24 @@ class RuntimeState:
         elapsed_minutes: int,
         elapsed_duration: str,
         summary_model_enabled: bool,
+        analysis_model_route: list[str] | None = None,
+        summary_model_route: list[str] | None = None,
     ) -> str:
         version_range = str(analysis.get("report_title") or "").strip() or "版本->版本"
-        analysis_model = self.settings.provider_id or "默认模型"
-        summary_model = self.settings.effective_summary_provider_id or "默认模型"
-        analysis_model_name = pure_model_name(analysis_model)
-        summary_model_name = pure_model_name(summary_model)
+        analysis_route = normalize_model_route(
+            analysis_model_route
+            or self.current_model_provider_route("analysis")
+            or [self.settings.provider_id or "默认模型"]
+        )
+        summary_route = normalize_model_route(
+            summary_model_route
+            or self.current_model_provider_route("summary")
+            or [self.settings.effective_summary_provider_id or "默认模型"]
+        )
+        analysis_model = format_model_route(analysis_route)
+        summary_model = format_model_route(summary_route)
+        analysis_model_name = format_model_route([pure_model_name(provider) for provider in analysis_route])
+        summary_model_name = format_model_route([pure_model_name(provider) for provider in summary_route])
         if not summary_model_enabled:
             summary_model = "未启动"
             summary_model_name = "未启动"
@@ -328,6 +367,10 @@ class RuntimeState:
             "summary_model": summary_model,
             "analysis_model_name": analysis_model_name,
             "summary_model_name": summary_model_name,
+            "analysis_model_chain": analysis_model,
+            "summary_model_chain": summary_model,
+            "analysis_model_chain_name": analysis_model_name,
+            "summary_model_chain_name": summary_model_name,
         }
         try:
             text = template.format_map(variables)
@@ -410,3 +453,17 @@ def pure_model_name(provider_id: str) -> str:
         if separator in text:
             text = text.rsplit(separator, 1)[-1]
     return text or "默认模型"
+
+
+def normalize_model_route(providers: list[str] | tuple[str, ...] | None) -> list[str]:
+    route: list[str] = []
+    for provider in providers or []:
+        text = str(provider or "").strip() or "默认模型"
+        if text in route:
+            continue
+        route.append(text)
+    return route or ["默认模型"]
+
+
+def format_model_route(providers: list[str] | tuple[str, ...] | None) -> str:
+    return " -> ".join(normalize_model_route(providers))
