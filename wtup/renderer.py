@@ -16,7 +16,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME
-from .diff_collector import DiffChunk, DiffSummary, short_sha
+from .diff_collector import DiffChunk, DiffSummary, normalize_report_title, short_sha
 from .token_usage import format_token_usage_text
 
 
@@ -152,7 +152,7 @@ def render_change_stats(summary: DiffSummary, chunk: DiffChunk) -> str:
 
 
 def report_display_title(summary: DiffSummary, chunk: DiffChunk, analysis: dict[str, Any]) -> str:
-    title = str(analysis.get("report_title") or "").strip()
+    title = normalize_report_title(summary, analysis.get("report_title"))
     if not title:
         title = f"{short_sha(summary.base_sha)}->{short_sha(summary.head_sha)}"
     return title

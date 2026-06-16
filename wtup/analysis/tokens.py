@@ -56,6 +56,8 @@ def split_chunks_by_token_limit(settings: PluginConfig, summary: DiffSummary) ->
         commits=summary.commits,
         files=summary.files,
         chunks=chunks,
+        base_version=getattr(summary, "base_version", ""),
+        head_version=getattr(summary, "head_version", ""),
     )
 
 def _split_file_group_by_token_limit(

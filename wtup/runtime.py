@@ -16,7 +16,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
-from .diff_collector import short_sha
+from .diff_collector import normalize_report_title, short_sha
 from .report_log import add_report_log_suffix, build_report_log_filename, sanitize_filename
 from .state_store import StateStore
 from .token_usage import format_token_usage_text
@@ -246,7 +246,7 @@ class RuntimeState:
         cleanup_keep: int | None = None,
         token_usage: Any | None = None,
     ) -> Path:
-        title = str(analysis.get("report_title") or "").strip()
+        title = normalize_report_title(summary, analysis.get("report_title"))
         filename = build_report_log_filename(title)
         if filename_suffix:
             filename = add_report_log_suffix(filename, filename_suffix)

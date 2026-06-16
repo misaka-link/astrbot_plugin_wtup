@@ -6,10 +6,33 @@ from tempfile import TemporaryDirectory
 
 from wtup.diff_collector import DiffChunk, DiffSummary
 from wtup.analysis import TokenUsage
-from wtup.renderer import build_report_html, render_footer_note, render_plain_text
+from wtup.renderer import build_report_html, render_footer_note, render_plain_text, report_display_title
 
 
 class RendererFooterNoteTest(unittest.TestCase):
+    def test_report_display_title_completes_partial_version_range(self) -> None:
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=0,
+            additions=0,
+            deletions=0,
+            changed_files=0,
+            commits=[],
+            files=[],
+            chunks=[],
+            base_version="2.56.0.42",
+            head_version="2.56.0.43",
+        )
+        chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+
+        self.assertEqual(
+            report_display_title(summary, chunk, {"report_title": "-> 2.56.0.43"}),
+            "2.56.0.42->2.56.0.43",
+        )
+
     def test_footer_note_renders_markdown_link_and_lines(self) -> None:
         self.assertEqual(
             render_footer_note("[repo](https://github.com/example/repo)\n第二行"),

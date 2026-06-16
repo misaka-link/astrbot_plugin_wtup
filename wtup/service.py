@@ -396,10 +396,12 @@ class UpdateCheckService:
                         summary_model_route = self.runtime.current_model_provider_route("summary")
                     else:
                         analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
-                if analysis_needs_review(analysis) and not analysis_failure_reasons:
-                    analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
+            if analysis_needs_review(analysis) and not analysis_failure_reasons:
+                analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
             analysis_failed = bool(analysis_failure_reasons)
             analysis = enforce_change_coverage(summary, summary.chunks, analysis)
+            if merged_analysis is not None:
+                merged_analysis = enforce_change_coverage(summary, summary.chunks, merged_analysis)
             coverage = analysis.get("coverage") if isinstance(analysis.get("coverage"), dict) else {}
             if coverage:
                 self.runtime.record_task_log(

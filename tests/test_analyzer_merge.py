@@ -30,7 +30,7 @@ from wtup.analyzer import (
     split_chunk_for_retry,
 )
 from wtup.config import PluginConfig, load_config
-from wtup.diff_collector import DiffChunk, DiffSummary, split_files
+from wtup.diff_collector import DiffChunk, DiffSummary, build_diff_summary, split_files
 from wtup.renderer import report_update_subtitle
 
 
@@ -77,6 +77,45 @@ def analysis(section_title: str, item_text: str, *, importance: str = "中") -> 
 
 
 class AnalyzerMergeTest(unittest.TestCase):
+    def test_diff_summary_extracts_versions_from_compare_commits(self) -> None:
+        summary = build_diff_summary(
+            {
+                "base_commit": {
+                    "sha": "base123",
+                    "commit": {"message": "2.56.0.42"},
+                },
+                "commits": [
+                    {
+                        "sha": "head456",
+                        "commit": {"message": "2.56.0.43"},
+                    }
+                ],
+                "files": [],
+            }
+        )
+
+        self.assertEqual(summary.base_version, "2.56.0.42")
+        self.assertEqual(summary.head_version, "2.56.0.43")
+
+    def test_merge_completes_partial_report_title_from_summary_versions(self) -> None:
+        summary = replace(make_summary(), base_version="2.56.0.42", head_version="2.56.0.43")
+        payload = analysis("武器调整", "第一项")
+        payload["report_title"] = "-> 2.56.0.43"
+        results = [ChunkAnalysis(1, 3, payload)]
+
+        merged = merge_chunk_analyses(summary, summary.chunks, results)
+
+        self.assertEqual(merged["report_title"], "2.56.0.42->2.56.0.43")
+
+    def test_coverage_check_completes_single_version_report_title(self) -> None:
+        summary = replace(make_summary(), base_version="2.56.0.42", head_version="2.56.0.43")
+        payload = analysis("武器调整", "第一项")
+        payload["report_title"] = "2.56.0.43"
+
+        updated = enforce_change_coverage(summary, summary.chunks, payload)
+
+        self.assertEqual(updated["report_title"], "2.56.0.42->2.56.0.43")
+
     def test_merge_preserves_chunk_order_even_when_results_arrive_out_of_order(self) -> None:
         summary = make_summary()
         results = [

@@ -26,6 +26,12 @@ class DiffSummary:
     commits: list[dict[str, Any]]
     files: list[dict[str, Any]]
     chunks: list[DiffChunk]
+    base_version: str = ""
+    head_version: str = ""
+
+
+VERSION_RE = re.compile(r"\b\d+(?:\.\d+){1,4}\b")
+REPORT_TITLE_RE = re.compile(r"^\s*(?P<base>\d+(?:\.\d+)*)?\s*->\s*(?P<head>\d+(?:\.\d+)*)?\s*$")
 
 
 def build_diff_summary(
@@ -41,14 +47,19 @@ def build_diff_summary(
         for file_payload in compare_payload.get("files", [])
         if isinstance(file_payload, dict)
     ]
-    commits = [
-        _normalize_commit(commit_payload)
+    raw_commits = [
+        commit_payload
         for commit_payload in compare_payload.get("commits", [])
         if isinstance(commit_payload, dict)
     ]
+    commits = [
+        _normalize_commit(commit_payload)
+        for commit_payload in raw_commits
+    ]
     chunks = split_files(files, max_files=max_files, max_chars=max_chars)
+    base_commit = compare_payload.get("base_commit") if isinstance(compare_payload.get("base_commit"), dict) else {}
     return DiffSummary(
-        base_sha=str((compare_payload.get("base_commit") or {}).get("sha") or ""),
+        base_sha=str(base_commit.get("sha") or ""),
         head_sha=str(commits[-1].get("sha") if commits else compare_payload.get("sha") or ""),
         compare_url=str(compare_payload.get("html_url") or compare_payload.get("permalink_url") or ""),
         total_commits=len(commits),
@@ -59,7 +70,48 @@ def build_diff_summary(
         commits=commits,
         files=files,
         chunks=chunks,
+        base_version=extract_version_from_commit(base_commit),
+        head_version=extract_version_from_commit(raw_commits[-1] if raw_commits else {}),
     )
+
+
+def normalize_report_title(summary: DiffSummary, title: Any) -> str:
+    text = str(title or "").strip().replace("→", "->")
+    inferred_base = str(getattr(summary, "base_version", "") or "").strip()
+    inferred_head = str(getattr(summary, "head_version", "") or "").strip()
+
+    match = REPORT_TITLE_RE.match(text)
+    if match:
+        base_version = match.group("base") or inferred_base
+        head_version = match.group("head") or inferred_head
+        if base_version and head_version:
+            return f"{base_version}->{head_version}"
+        inferred = inferred_version_range(summary)
+        return inferred or ""
+
+    versions = VERSION_RE.findall(text)
+    if len(versions) == 1:
+        version = versions[0]
+        if inferred_base and version == inferred_head:
+            return f"{inferred_base}->{version}"
+        if inferred_head and version == inferred_base:
+            return f"{version}->{inferred_head}"
+        inferred = inferred_version_range(summary)
+        if inferred:
+            return inferred
+
+    inferred = inferred_version_range(summary)
+    if inferred and (not text or "->" in text or versions):
+        return inferred
+    return text
+
+
+def inferred_version_range(summary: DiffSummary) -> str:
+    base_version = str(getattr(summary, "base_version", "") or "").strip()
+    head_version = str(getattr(summary, "head_version", "") or "").strip()
+    if base_version and head_version:
+        return f"{base_version}->{head_version}"
+    return ""
 
 
 def split_files(files: list[dict[str, Any]], *, max_files: int = 0, max_chars: int = 0) -> list[DiffChunk]:
@@ -297,6 +349,17 @@ def first_line(value: object) -> str:
     return str(value or "").strip().splitlines()[0][:220]
 
 
+def extract_version_from_commit(commit_payload: dict[str, Any]) -> str:
+    message = _commit_message(commit_payload)
+    versions = VERSION_RE.findall(message)
+    return versions[-1] if versions else ""
+
+
+def _commit_message(commit_payload: dict[str, Any]) -> str:
+    commit = commit_payload.get("commit") if isinstance(commit_payload.get("commit"), dict) else {}
+    return str(commit.get("message") or commit_payload.get("message") or "")
+
+
 def _normalize_file(file_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "filename": str(file_payload.get("filename") or ""),
@@ -316,7 +379,7 @@ def _normalize_commit(commit_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "sha": str(commit_payload.get("sha") or ""),
         "html_url": str(commit_payload.get("html_url") or ""),
-        "message": str(commit.get("message") or ""),
+        "message": _commit_message(commit_payload),
         "author_name": str(author.get("name") or ""),
         "authored_at": str(author.get("date") or ""),
     }

@@ -54,7 +54,7 @@ class ReportLogFilenameTest(unittest.TestCase):
         )
 
     def test_plugin_version_is_current(self) -> None:
-        self.assertEqual(PLUGIN_VERSION, "0.1.4")
+        self.assertEqual(PLUGIN_VERSION, "0.1.5")
 
 
 class ModelErrorLogTest(unittest.TestCase):

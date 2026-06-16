@@ -11,7 +11,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME
-from ..diff_collector import DiffChunk, DiffSummary
+from ..diff_collector import DiffChunk, DiffSummary, normalize_report_title
 from .fallback import fallback_analysis
 from .models import ChunkAnalysis
 from .normalize import clean_pagination_text, normalize_analysis, normalize_importance, normalize_update_items
@@ -28,7 +28,7 @@ def merge_chunk_analyses(
     ordered_results = order_chunk_results(chunks, results)
     analyses = [coerce_analysis(result.analysis) for result in ordered_results]
 
-    report_title = first_text(analysis.get("report_title") for analysis in analyses)
+    report_title = normalize_report_title(summary, first_text(analysis.get("report_title") for analysis in analyses))
     importance = max_importance(analysis.get("importance") for analysis in analyses)
     tags = unique_preserve_order(tag for analysis in analyses for tag in analysis.get("tags", []))
     update_sections = merge_update_sections(analyses)

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..diff_collector import DiffChunk, DiffSummary
+from ..diff_collector import DiffChunk, DiffSummary, normalize_report_title
 from .normalize import normalize_analysis, normalize_list
 
 
@@ -52,9 +52,9 @@ def enforce_change_coverage(
 ) -> dict[str, Any]:
     expected = _expected_entries(summary, chunks)
     if not expected:
-        return normalize_analysis(analysis)
+        return _normalize_analysis_title(summary, normalize_analysis(analysis))
 
-    normalized = normalize_analysis(analysis)
+    normalized = _normalize_analysis_title(summary, normalize_analysis(analysis))
     covered = collect_source_ids(normalized)
     precovered = precovered_source_ids or set()
     missing = [entry for entry in expected if entry.source_id not in covered and entry.source_id not in precovered]
@@ -66,7 +66,7 @@ def enforce_change_coverage(
             "missing": 0,
             "missing_source_ids": [],
         }
-        return normalize_analysis(updated)
+        return _normalize_analysis_title(summary, normalize_analysis(updated))
 
     sections = list(normalized.get("update_sections") or [])
     for index, batch in enumerate(_batches(missing, 500), start=1):
@@ -105,7 +105,7 @@ def enforce_change_coverage(
         "missing": len(missing),
         "missing_source_ids": [entry.source_id for entry in missing],
     }
-    return normalize_analysis(updated)
+    return _normalize_analysis_title(summary, normalize_analysis(updated))
 
 
 def collect_source_ids(analysis: dict[str, Any]) -> set[str]:
@@ -116,6 +116,12 @@ def collect_source_ids(analysis: dict[str, Any]) -> set[str]:
             continue
         result.update(_collect_item_source_ids(section.get("items")))
     return result
+
+
+def _normalize_analysis_title(summary: DiffSummary, analysis: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(analysis)
+    updated["report_title"] = normalize_report_title(summary, updated.get("report_title"))
+    return updated
 
 
 def _collect_item_source_ids(items: Any) -> set[str]:
