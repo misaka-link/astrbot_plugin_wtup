@@ -4,6 +4,7 @@ import asyncio
 import re
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ try:
     from .wtup.runtime import RuntimeState
     from .wtup.service import UpdateCheckService
     from .wtup.state_store import StateStore
+    from .wtup.termination import TaskTerminatedError, reset_task_termination
 except ImportError:
     from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
     from wtup.diff_collector import short_sha
@@ -25,11 +27,13 @@ except ImportError:
     from wtup.runtime import RuntimeState
     from wtup.service import UpdateCheckService
     from wtup.state_store import StateStore
+    from wtup.termination import TaskTerminatedError, reset_task_termination
 
 
 COMMAND_RECEIVED_EMOJI_ID = "289"
 COMMAND_DONE_EMOJI_ID = "124"
 CLEAR_CACHE_FILES_CONFIG_KEY = "clear_cache_files"
+TERMINATE_RUNNING_TASK_CONFIG_KEY = "terminate_running_task"
 
 
 def _get_event_message_id(event: AstrMessageEvent) -> str:
@@ -243,7 +247,7 @@ class WTUpdatePlugin(Star):
         self._task: asyncio.Task | None = None
         self.service = UpdateCheckService(
             context=self.context,
-            settings=self.settings,
+            settings=self._with_dynamic_controls(self.settings),
             state_store=self.state_store,
             image_dir=self.image_dir,
             log_dir=self.log_dir,
@@ -251,6 +255,25 @@ class WTUpdatePlugin(Star):
             template_path=self.template_path,
             render_host=self,
         )
+        self.settings = self.service.with_runtime_hooks(self._with_dynamic_controls(self.settings))
+        self.service.settings = self.settings
+
+    def _with_dynamic_controls(self, settings: PluginConfig) -> PluginConfig:
+        return replace(
+            settings,
+            task_termination_checker=self._should_terminate_running_task,
+            task_termination_resetter=self._reset_terminate_running_task,
+        )
+
+    def _should_terminate_running_task(self) -> bool:
+        return load_config(self.config).terminate_running_task
+
+    def _reset_terminate_running_task(self) -> None:
+        if not load_config(self.config).terminate_running_task:
+            return
+        if _set_config_value(self.config, TERMINATE_RUNNING_TASK_CONFIG_KEY, False):
+            _save_config(self.config)
+        self.settings = self._with_dynamic_controls(load_config(self.config))
         self.settings = self.service.with_runtime_hooks(self.settings)
         self.service.settings = self.settings
 
@@ -305,6 +328,8 @@ class WTUpdatePlugin(Star):
             f"备用模型: {len(self.settings.backup_provider_ids)} 个",
             f"分析前报告: {'生成' if self.settings.enable_pre_summary_report else '关闭'}",
             f"最大重试次数: {self.settings.max_retry_count}",
+            f"GitHub 请求最大重试次数: {self.settings.github_max_retry_count}",
+            f"终止当前任务开关: {'开启' if self._should_terminate_running_task() else '关闭'}",
             f"文件保留数量: {self.settings.max_saved_artifacts or '不限制'}",
         ]
         await self._react_to_command_done(event)
@@ -458,6 +483,25 @@ class WTUpdatePlugin(Star):
                 target_groups=target_groups,
                 analysis_file_groups=analysis_file_groups,
             )
+        except TaskTerminatedError as exc:
+            runtime = getattr(getattr(self, "service", None), "runtime", None)
+            message = f"任务已终止：{exc.stage or '后台开关已开启'}。未标记本次更新完成。"
+            task_log_path = runtime.current_task_log_path if runtime is not None else None
+            if runtime is not None and runtime.current_task_log_path is not None:
+                runtime.record_task_log("任务终止", {"阶段": exc.stage or "未知", "结果": "未标记 commit 完成"})
+                runtime.finish_task_log(
+                    status="已终止",
+                    message=message,
+                    elapsed_seconds=runtime.current_task_elapsed_seconds(),
+                )
+            reset_task_termination(self.settings)
+            logger.warning("[%s] %s", PLUGIN_NAME, message)
+            return {
+                "message": message,
+                "task_log_path": task_log_path,
+                "terminated": True,
+                "commit_marked_complete": False,
+            }
         except Exception as exc:
             runtime = getattr(getattr(self, "service", None), "runtime", None)
             if runtime is not None and runtime.current_task_log_path is not None:

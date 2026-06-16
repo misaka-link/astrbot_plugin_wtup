@@ -7,9 +7,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .config import PLUGIN_NAME, PLUGIN_VERSION
+from .termination import TaskTerminatedError
 
 
 _logger = logging.getLogger(PLUGIN_NAME)
@@ -39,10 +40,22 @@ class CommitRef:
 
 
 class GitHubClient:
-    def __init__(self, token: str = "", timeout: int = 30, max_retries: int = 3):
+    def __init__(
+        self,
+        token: str = "",
+        timeout: int = 30,
+        max_retries: int = 4,
+        *,
+        retry_base_delay_seconds: float = 60.0,
+        should_terminate: Callable[[], bool] | None = None,
+        sleep_func: Callable[[float], None] = time.sleep,
+    ):
         self.token = str(token or "").strip()
         self.timeout = timeout
         self.max_retries = max(0, max_retries)
+        self.retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
+        self.should_terminate = should_terminate
+        self.sleep_func = sleep_func
 
     def get_latest_commit(self, repo: str, branch: str) -> CommitRef:
         payload = self._request_json(f"/repos/{repo}/commits/{urllib.parse.quote(branch, safe='')}")
@@ -82,12 +95,16 @@ class GitHubClient:
         last_error: GitHubRequestError | None = None
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
-                wait = 2 ** (attempt - 1)
+                wait = self._retry_delay_seconds(attempt)
                 _logger.warning(
-                    "[%s] 请求失败 (status=%s)，%d 秒后重试 (第 %d/%d 次)...",
-                    PLUGIN_NAME, last_error.status_code if last_error else "network", wait, attempt, self.max_retries,
+                    "[%s] 请求失败 (status=%s)，%s后重试 (第 %d/%d 次)...",
+                    PLUGIN_NAME,
+                    last_error.status_code if last_error else "network",
+                    self._format_retry_delay(wait),
+                    attempt,
+                    self.max_retries,
                 )
-                time.sleep(wait)
+                self._sleep_before_retry(wait)
             try:
                 return self._do_request_json(url, headers)
             except GitHubRequestError as exc:
@@ -129,12 +146,16 @@ class GitHubClient:
         last_error: GitHubRequestError | None = None
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
-                wait = 2 ** (attempt - 1)
+                wait = self._retry_delay_seconds(attempt)
                 _logger.warning(
-                    "[%s] 请求失败 (status=%s)，%d 秒后重试 (第 %d/%d 次)...",
-                    PLUGIN_NAME, last_error.status_code if last_error else "network", wait, attempt, self.max_retries,
+                    "[%s] 请求失败 (status=%s)，%s后重试 (第 %d/%d 次)...",
+                    PLUGIN_NAME,
+                    last_error.status_code if last_error else "network",
+                    self._format_retry_delay(wait),
+                    attempt,
+                    self.max_retries,
                 )
-                time.sleep(wait)
+                self._sleep_before_retry(wait)
             try:
                 return self._do_request_text(url, headers)
             except GitHubRequestError as exc:
@@ -164,6 +185,28 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        return self.retry_base_delay_seconds * (2 ** max(0, attempt - 1))
+
+    @staticmethod
+    def _format_retry_delay(seconds: float) -> str:
+        if seconds >= 60 and seconds % 60 == 0:
+            return f"{int(seconds // 60)}分钟"
+        if seconds == int(seconds):
+            return f"{int(seconds)}秒"
+        return f"{seconds:.1f}秒"
+
+    def _sleep_before_retry(self, delay_seconds: float) -> None:
+        remaining = max(0.0, float(delay_seconds))
+        while remaining > 0:
+            if self.should_terminate is not None and self.should_terminate():
+                raise TaskTerminatedError("GitHub 请求重试等待")
+            interval = min(1.0, remaining)
+            self.sleep_func(interval)
+            remaining -= interval
+        if self.should_terminate is not None and self.should_terminate():
+            raise TaskTerminatedError("GitHub 请求重试等待")
 
     @staticmethod
     def _extract_error_message(body: str) -> str:

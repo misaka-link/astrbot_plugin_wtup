@@ -70,6 +70,7 @@ mode: commit
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`、`{analysis_model_chain}`、`{summary_model_chain}`、`{analysis_model_chain_name}`、`{summary_model_chain_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`；如果中途切换备用模型，模型变量会按实际请求链路输出，例如 `glm-5.1 -> gemini-3.5-flash`，`*_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `github_token`：GitHub Personal Access Token，可选。
+- `github_max_retry_count`：GitHub 请求最大重试次数，默认 4。遇到网络错误、限流或 5xx 临时错误时按 1、2、4、8 分钟递增等待后重试。
 - `max_files_per_report`：每次模型请求最多文件数，默认 150。
 - `max_input_tokens`：每次模型请求最大 token 输入，默认 0.1，支持最多两位小数。
 - `max_input_token_unit`：token 输入单位，可选 `K` 或 `M`，默认 `M`。
@@ -84,6 +85,7 @@ mode: commit
 - `max_dynamic_context_requests`：每次更新最多实际入队的动态补充请求数，默认 8；设置为 0 表示不执行动态补充。
 - `max_dynamic_files_per_request`：每个动态补充请求最多带入的缺少文件数，默认 4。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
+- `terminate_running_task`：终止当前正在运行的任务，默认关闭。开启后当前检查会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中尽快停止，且不会把本次 commit 标记为完成；终止后会自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 
 `github_token` 获取位置：
@@ -149,6 +151,8 @@ https://github.com/settings/tokens
 `max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
+
+GitHub 请求失败会按 `github_max_retry_count` 重试，默认最多重试 4 次。重试只处理网络错误、GitHub 限流和 5xx 临时错误，等待时间依次为 1 分钟、2 分钟、4 分钟、8 分钟；权限错误、仓库或分支不存在等明确错误不会重试。重试等待期间也会检测 `terminate_running_task`，后台打开终止开关后会尽快停止等待并结束当前任务。
 
 `enable_streaming_llm_call` 默认关闭，关闭时继续使用原有 `context.llm_generate` 非流式调用。开启后，插件会优先通过 AstrBot Provider 的 `text_chat_stream` 流式接口请求模型，并把流式片段聚合成完整响应再进入 JSON 解析、修复、重试和 token 统计流程。该开关适用于仅支持流式请求的服务；如果未配置 Provider ID 且无法定位可用流式 Provider，插件会记录 warning 并回退为非流式请求。
 

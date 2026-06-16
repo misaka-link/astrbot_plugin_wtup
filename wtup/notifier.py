@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import inspect
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from astrbot.api import logger
@@ -15,10 +15,16 @@ except ModuleNotFoundError:
     MessageChain = None
 
 from .config import PLUGIN_NAME
+from .termination import TaskTerminatedError
 
 
 def _is_group_id(target: str) -> bool:
     return target.isdigit()
+
+
+def _check_push_termination(should_terminate: Callable[[], bool] | None, stage: str) -> None:
+    if should_terminate is not None and should_terminate():
+        raise TaskTerminatedError(stage)
 
 
 def _onebot_image_file(path: Path) -> str:
@@ -260,6 +266,7 @@ async def push_report(
     image_path: Path | None,
     fallback_text: str,
     event: Any | None = None,
+    should_terminate: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
     success = 0
     failed = 0
@@ -268,6 +275,7 @@ async def push_report(
         target = str(target).strip()
         if not target:
             continue
+        _check_push_termination(should_terminate, f"推送报告到 {target} 前")
         try:
             if _is_group_id(target):
                 await _send_group_message_by_id(
@@ -299,6 +307,7 @@ async def push_text(
     *,
     text: str,
     event: Any | None = None,
+    should_terminate: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
     success = 0
     failed = 0
@@ -307,6 +316,7 @@ async def push_text(
         target = str(target).strip()
         if not target:
             continue
+        _check_push_termination(should_terminate, f"推送文字到 {target} 前")
         try:
             if _is_group_id(target):
                 await _send_group_text_by_id(
@@ -332,6 +342,7 @@ async def push_admin_notification(
     *,
     text: str,
     event: Any | None = None,
+    should_terminate: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
     success = 0
     failed = 0
@@ -340,6 +351,7 @@ async def push_admin_notification(
         target = str(target).strip()
         if not target:
             continue
+        _check_push_termination(should_terminate, f"推送管理员通知到 {target} 前")
         try:
             if _is_group_id(target):
                 await _send_private_text_by_id(
@@ -365,6 +377,7 @@ async def push_log_file(
     *,
     log_path: Path,
     event: Any | None = None,
+    should_terminate: Callable[[], bool] | None = None,
 ) -> tuple[int, int]:
     success = 0
     failed = 0
@@ -373,6 +386,7 @@ async def push_log_file(
         target = str(target).strip()
         if not target:
             continue
+        _check_push_termination(should_terminate, f"推送日志文件到 {target} 前")
         try:
             if _is_group_id(target):
                 await _upload_group_file_by_id(

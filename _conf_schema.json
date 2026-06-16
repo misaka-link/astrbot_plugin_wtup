@@ -126,6 +126,12 @@
     "hint": "可选。用于提高 GitHub API 访问限额。获取位置：https://github.com/settings/tokens 。公开仓库只读访问即可：Fine-grained token 选择 Public repositories read-only；Classic token 可不勾选 scopes。留空则匿名访问，限额较低。",
     "default": ""
   },
+  "github_max_retry_count": {
+    "type": "int",
+    "description": "GitHub 请求最大重试次数",
+    "hint": "默认 4。GitHub 请求遇到网络错误、限流或 5xx 临时错误时会重试，等待时间按 1、2、4、8 分钟递增；遇到权限、仓库不存在等明确错误不会重试。",
+    "default": 4
+  },
   "max_files_per_report": {
     "type": "int",
     "description": "每次模型请求最多文件数",
@@ -209,6 +215,12 @@
     "type": "bool",
     "description": "清空缓存文件",
     "hint": "默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、模型分析缓存、日志、图片和状态文件，然后自动把此开关改回关闭。",
+    "default": false
+  },
+  "terminate_running_task": {
+    "type": "bool",
+    "description": "终止当前正在运行的任务",
+    "hint": "默认关闭。开启后，正在执行的检查任务会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中检测到该开关并尽快终止；终止后不会标记本次 commit 完成，并会自动改回关闭。",
     "default": false
   },
   "max_saved_artifacts": {

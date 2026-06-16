@@ -34,6 +34,7 @@ from .renderer import build_report_html, render_plain_text, render_report_image
 from .runtime import RuntimeState, ceil_minutes, format_elapsed_duration, warning_log
 from .state_store import StateStore
 from .analysis import TokenUsage
+from .termination import check_task_termination, task_should_terminate
 
 
 @dataclass
@@ -176,11 +177,18 @@ class UpdateCheckService:
                     "日志文件推送目标数": len(file_targets),
                 },
             )
+            check_task_termination(self.settings, "任务开始")
 
-            client = GitHubClient(token=self.settings.github_token)
+            client = GitHubClient(
+                token=self.settings.github_token,
+                max_retries=self.settings.github_max_retry_count,
+                should_terminate=lambda: task_should_terminate(self.settings),
+            )
             logger.warning("[%s] 步骤 1/5: 获取最新 commit...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 1/5 开始", {"内容": "获取最新 commit"})
+            check_task_termination(self.settings, "获取最新 commit 前")
             latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
+            check_task_termination(self.settings, "获取最新 commit 后")
             logger.warning("[%s] 已完成获取最新 commit: %s", PLUGIN_NAME, short_sha(latest.sha))
             self.runtime.record_task_log("步骤 1/5 完成", {"最新提交": short_sha(latest.sha)})
             if not latest.sha:
@@ -246,6 +254,7 @@ class UpdateCheckService:
                     "提交范围": f"{short_sha(previous_sha)}...{short_sha(latest.sha)}",
                 },
             )
+            check_task_termination(self.settings, "对比 commits 前")
             compare_result = await asyncio.to_thread(
                 self.github_cache.get_compare,
                 REPO_FULL_NAME,
@@ -253,6 +262,7 @@ class UpdateCheckService:
                 latest.sha,
                 lambda: client.compare_commits(REPO_FULL_NAME, previous_sha, latest.sha),
             )
+            check_task_termination(self.settings, "对比 commits 后")
             compare_payload = compare_result.value
             logger.warning("[%s] 已完成对比 commits，共 %d 个文件变更", PLUGIN_NAME, len(compare_payload.get("files", [])))
             self.runtime.record_task_log(
@@ -263,6 +273,7 @@ class UpdateCheckService:
             logger.warning("[%s] 步骤 3/5: 获取原始 diff...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 3/5 开始", {"内容": "获取原始 diff"})
             try:
+                check_task_termination(self.settings, "获取原始 diff 前")
                 diff_result = await asyncio.to_thread(
                     self.github_cache.get_diff,
                     REPO_FULL_NAME,
@@ -270,6 +281,7 @@ class UpdateCheckService:
                     latest.sha,
                     lambda: client.compare_diff_text(REPO_FULL_NAME, previous_sha, latest.sha),
                 )
+                check_task_termination(self.settings, "获取原始 diff 后")
                 raw_diff_text = diff_result.value
                 logger.warning("[%s] 已完成获取原始 diff", PLUGIN_NAME)
                 self.runtime.record_task_log(
@@ -286,6 +298,7 @@ class UpdateCheckService:
 
             logger.warning("[%s] 步骤 4/5: 构建 diff 摘要...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 4/5 开始", {"内容": "构建 diff 摘要"})
+            check_task_termination(self.settings, "构建 diff 摘要前")
             summary = build_diff_summary(
                 compare_payload,
                 raw_diff_text=raw_diff_text,
@@ -300,6 +313,7 @@ class UpdateCheckService:
                     max_chars=0,
                 )
             summary = split_chunks_by_token_limit(self.settings, summary)
+            check_task_termination(self.settings, "构建 diff 摘要后")
             input_token_count = sum(estimate_chunk_input_tokens(self.settings, summary, chunk) for chunk in summary.chunks)
             logger.warning(
                 "[%s] 已完成构建 diff 摘要，%d 个文件，拆分为 %d 次模型请求，预计输入 %d token",
@@ -326,6 +340,7 @@ class UpdateCheckService:
 
             logger.warning("[%s] 步骤 5/5: 分析并生成报告...", PLUGIN_NAME)
             self.runtime.record_task_log("步骤 5/5 开始", {"内容": "分析并生成报告"})
+            check_task_termination(self.settings, "模型分析前")
             summary_model_enabled = self.settings.enable_summary_model
             analysis_cache_entry = self.analysis_cache.read(settings=self.settings, repo=REPO_FULL_NAME, summary=summary)
             analysis_source = "cache" if analysis_cache_entry is not None else "model"
@@ -352,6 +367,7 @@ class UpdateCheckService:
                 )
             else:
                 chunk_results = await analyze_chunks(self.context, self.settings, summary)
+                check_task_termination(self.settings, "模型分片分析后")
                 token_usage = sum_token_usage(result.token_usage for result in chunk_results)
                 analysis_failure_reasons = chunk_failure_reasons(chunk_results)
                 pre_summary_token_usage = token_usage
@@ -370,6 +386,7 @@ class UpdateCheckService:
                             summary,
                             analysis,
                         )
+                        check_task_termination(self.settings, "总结模型分析后")
                         token_usage += summary_usage
                         summary_model_route = self.runtime.current_model_provider_route("summary")
                 except Exception as exc:
@@ -392,6 +409,7 @@ class UpdateCheckService:
                             chunk_results,
                             merge_error=str(exc),
                         )
+                        check_task_termination(self.settings, "总结模型兜底分析后")
                         token_usage += summary_usage
                         summary_model_route = self.runtime.current_model_provider_route("summary")
                     else:
@@ -469,6 +487,7 @@ class UpdateCheckService:
                 else max(self.settings.max_saved_artifacts, len(report_specs))
             )
             for key, display_name, report_analysis, filename_suffix, report_token_usage in report_specs:
+                check_task_termination(self.settings, f"生成报告文件前: {display_name or '合并报告'}")
                 html_text = build_report_html(
                     self.template_path,
                     summary,
@@ -511,6 +530,7 @@ class UpdateCheckService:
                         token_usage=report_token_usage,
                     )
                 )
+                check_task_termination(self.settings, f"生成报告文件后: {display_name or '合并报告'}")
             self.runtime.cleanup_saved_artifacts(self.image_dir, keep=file_cleanup_keep)
             final_report = report_artifacts[-1]
             image_path = final_report.image_path
@@ -557,6 +577,7 @@ class UpdateCheckService:
                         self.settings.admin_targets,
                         text=notice_text,
                         event=event,
+                        should_terminate=lambda: task_should_terminate(self.settings),
                     )
                     logger.warning(
                         "[%s] 管理员通知完成: 成功 %d，失败 %d",
@@ -584,12 +605,14 @@ class UpdateCheckService:
                     {"报告份数": len(report_artifacts), "目标群数": len(push_targets)},
                 )
                 for report in report_artifacts:
+                    check_task_termination(self.settings, f"报告推送前: {report.display_name or '合并报告'}")
                     ok, failed = await push_report(
                         self.context,
                         push_targets,
                         image_path=report.image_path,
                         fallback_text=report.fallback_text,
                         event=event,
+                        should_terminate=lambda: task_should_terminate(self.settings),
                     )
                     sent_count += ok
                     failed_count += failed
@@ -611,11 +634,13 @@ class UpdateCheckService:
                         },
                     )
                     if report.append_text:
+                        check_task_termination(self.settings, f"追加文字推送前: {report.display_name or '合并报告'}")
                         text_ok, text_failed = await push_text(
                             self.context,
                             push_targets,
                             text=report.append_text,
                             event=event,
+                            should_terminate=lambda: task_should_terminate(self.settings),
                         )
                         sent_count += text_ok
                         failed_count += text_failed
@@ -647,11 +672,13 @@ class UpdateCheckService:
                     {"报告份数": len(report_artifacts), "目标群数": len(file_targets)},
                 )
                 for report in report_artifacts:
+                    check_task_termination(self.settings, f"分析日志文件推送前: {report.display_name or '合并报告'}")
                     file_ok, file_failed = await push_log_file(
                         self.context,
                         file_targets,
                         log_path=report.log_path,
                         event=event,
+                        should_terminate=lambda: task_should_terminate(self.settings),
                     )
                     logger.warning(
                         "[%s] %s分析日志文件推送完成: 成功 %d，失败 %d",

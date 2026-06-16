@@ -59,6 +59,7 @@ class PluginConfig:
     analysis_file_groups: list[str]
     monitor_interval_minutes: int
     github_token: str
+    github_max_retry_count: int
     max_files_per_report: int
     max_input_tokens: Decimal
     max_input_token_unit: str
@@ -76,6 +77,7 @@ class PluginConfig:
     max_dynamic_files_per_request: int = 4
     enable_pre_summary_report: bool = False
     clear_cache_files: bool = False
+    terminate_running_task: bool = False
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
     backup_provider_ids: list[str] = field(default_factory=list)
@@ -90,6 +92,8 @@ class PluginConfig:
         compare=False,
         repr=False,
     )
+    task_termination_checker: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
+    task_termination_resetter: Callable[[], None] | None = field(default=None, compare=False, repr=False)
     github_cache_dir: Path | None = field(default=None, compare=False, repr=False)
 
     @property
@@ -240,6 +244,7 @@ def load_config(config: Any) -> PluginConfig:
             minimum=1,
         ),
         github_token=str(config_get(config, "github_token", "") or "").strip(),
+        github_max_retry_count=as_int(config_get(config, "github_max_retry_count", 4), 4, minimum=0),
         max_files_per_report=as_int(
             config_get(config, "max_files_per_report", DEFAULT_MAX_FILES_PER_REPORT),
             DEFAULT_MAX_FILES_PER_REPORT,
@@ -261,6 +266,7 @@ def load_config(config: Any) -> PluginConfig:
         max_dynamic_context_requests=as_int(config_get(config, "max_dynamic_context_requests", 8), 8, minimum=0),
         max_dynamic_files_per_request=as_int(config_get(config, "max_dynamic_files_per_request", 4), 4, minimum=1),
         clear_cache_files=as_bool(config_get(config, "clear_cache_files", False)),
+        terminate_running_task=as_bool(config_get(config, "terminate_running_task", False)),
         max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
         enable_push_append_text=as_bool(config_get(config, "enable_push_append_text", False)),
         push_append_text_template=str(

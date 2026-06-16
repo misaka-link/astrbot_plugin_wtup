@@ -17,6 +17,7 @@ from ..config import PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
 from ..diff_collector import DiffChunk, DiffSummary
 from ..github_cache import GitHubCache
 from ..github_client import GitHubClient, GitHubRequestError
+from ..termination import check_task_termination, task_should_terminate
 
 
 SUPPORTED_TOOLS = {
@@ -73,6 +74,7 @@ async def _execute_single_tool_call(
     round_index: int,
     github_file_cache: dict[str, str] | None,
 ) -> dict[str, Any]:
+    check_task_termination(settings, "执行模型工具调用前")
     tool = str(call.get("tool") or "").strip()
     if tool not in SUPPORTED_TOOLS:
         result = _tool_result(
@@ -185,7 +187,13 @@ async def _read_changed_file(
             content = cache[cache_key]
             source = "github_cache"
         else:
-            client = GitHubClient(token=settings.github_token, timeout=settings.timeout_seconds)
+            check_task_termination(settings, f"工具读取 GitHub 文件前: {path}")
+            client = GitHubClient(
+                token=settings.github_token,
+                timeout=settings.timeout_seconds,
+                max_retries=getattr(settings, "github_max_retry_count", 4),
+                should_terminate=lambda: task_should_terminate(settings),
+            )
             disk_cache = _github_cache_from_settings(settings)
             if disk_cache is None:
                 content = await _fetch_github_file_text(client, summary.head_sha, path)
@@ -201,6 +209,7 @@ async def _read_changed_file(
                 content = result.value
                 source = "github_cache" if result.source == "cache" else "github"
             cache[cache_key] = content
+            check_task_termination(settings, f"工具读取 GitHub 文件后: {path}")
     except GitHubRequestError as exc:
         patch = str((file_info or {}).get("patch") or "").strip()
         if patch:

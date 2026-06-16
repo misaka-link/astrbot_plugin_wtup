@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME, PluginConfig
+from ..termination import TaskTerminatedError, check_task_termination
 from .errors import record_model_error
 from .normalize import safe_normalize_analysis
 from .responses import extract_response_text, extract_token_usage
@@ -36,6 +37,7 @@ async def request_llm(
     chunk: Any | None = None,
     purpose: str = "模型请求",
 ) -> Any:
+    check_task_termination(settings, f"{purpose} 准备请求前")
     if not allow_fallback:
         return await _request_llm_with_provider(
             context,
@@ -67,6 +69,8 @@ async def request_llm(
                 chunk=chunk,
                 purpose=purpose,
             )
+        except TaskTerminatedError:
+            raise
         except Exception as exc:
             last_error = exc
             has_next = index + 1 < len(provider_ids)
@@ -109,6 +113,7 @@ async def _request_llm_with_provider(
     chunk: Any | None,
     purpose: str,
 ) -> Any:
+    check_task_termination(settings, f"{purpose} Provider 请求前")
     normalized_provider_id = str(provider_id or "").strip()
     request_no = _record_task_log(
         settings,
@@ -183,6 +188,7 @@ async def _request_llm_with_provider(
 
     try:
         response = await _request_llm_once(context, settings, prompt, provider_id=normalized_provider_id)
+        check_task_termination(settings, f"{purpose} Provider 请求后")
         usage = extract_token_usage(response)
         response_text = extract_response_text(response)
         _record_task_log(
@@ -200,6 +206,8 @@ async def _request_llm_with_provider(
             },
         )
         return response
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         _record_provider_request_error(
             settings,

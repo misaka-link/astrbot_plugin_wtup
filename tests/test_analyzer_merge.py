@@ -455,6 +455,17 @@ class ConfigTest(unittest.TestCase):
 
         self.assertTrue(settings.clear_cache_files)
 
+    def test_github_retry_and_termination_defaults(self) -> None:
+        settings = load_config({})
+
+        self.assertEqual(settings.github_max_retry_count, 4)
+        self.assertFalse(settings.terminate_running_task)
+
+    def test_terminate_running_task_accepts_bool_like_values(self) -> None:
+        settings = load_config({"terminate_running_task": "开启"})
+
+        self.assertTrue(settings.terminate_running_task)
+
     def test_dynamic_context_queue_defaults_to_enabled_with_limits(self) -> None:
         settings = load_config({})
 
@@ -499,6 +510,7 @@ def make_settings(*, model_concurrency: int = 2) -> PluginConfig:
         analysis_file_groups=[],
         monitor_interval_minutes=30,
         github_token="",
+        github_max_retry_count=4,
         max_files_per_report=1,
         max_input_tokens=0,
         max_input_token_unit="K",
@@ -559,6 +571,7 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
             analysis_file_groups=[],
             monitor_interval_minutes=settings.monitor_interval_minutes,
             github_token="",
+            github_max_retry_count=4,
             max_files_per_report=1,
             max_input_tokens=0,
             max_input_token_unit="K",
@@ -757,6 +770,7 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
             analysis_file_groups=[],
             monitor_interval_minutes=30,
             github_token="",
+            github_max_retry_count=4,
             max_files_per_report=1,
             max_input_tokens=0,
             max_input_token_unit="K",

@@ -12,6 +12,7 @@ except ModuleNotFoundError:
 
 from ..config import PLUGIN_NAME, PluginConfig
 from ..diff_collector import DiffChunk, DiffSummary
+from ..termination import TaskTerminatedError, check_task_termination
 from .client import request_llm
 from .errors import record_model_error
 from .fallback import fallback_analysis
@@ -57,6 +58,7 @@ async def parse_or_repair_analysis_with_usage(
         return parsed, TokenUsage()
 
     logger.warning("[%s] 模型输出 JSON 解析失败，启动 JSON 修复模型请求 chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+    check_task_termination(settings, f"{purpose} 请求前: {chunk.index}/{chunk.total}")
     repair_prompt = build_json_repair_prompt(settings, summary, chunk, raw_text)
     repair_usage = TokenUsage()
     try:
@@ -66,6 +68,7 @@ async def parse_or_repair_analysis_with_usage(
             async with semaphore:
                 response = await request_llm(context, settings, repair_prompt, purpose=purpose)
         repair_usage = extract_token_usage(response)
+        check_task_termination(settings, f"{purpose} 请求后: {chunk.index}/{chunk.total}")
         ensure_usable_llm_response(response)
         repair_text = extract_response_text(response)
         repaired = parse_analysis_json(repair_text)
@@ -80,6 +83,8 @@ async def parse_or_repair_analysis_with_usage(
             extra={"raw_text": raw_text[:4000], "repair_text": repair_text[:4000]},
         )
         logger.warning("[%s] JSON 修复模型请求仍未返回有效 JSON chunk %d/%d", PLUGIN_NAME, chunk.index, chunk.total)
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         record_model_error(
             settings,

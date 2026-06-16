@@ -13,6 +13,7 @@ except ModuleNotFoundError:
 
 from ..config import PLUGIN_NAME, PluginConfig
 from ..diff_collector import DiffChunk, DiffSummary, group_related_files
+from ..termination import TaskTerminatedError, check_task_termination
 from .client import request_llm
 from .coverage import collect_source_ids, enforce_change_coverage
 from .errors import record_model_error
@@ -44,8 +45,10 @@ class DynamicContextTask:
 
 
 async def analyze_chunk(context: Any, settings: PluginConfig, summary: DiffSummary, chunk: DiffChunk) -> dict[str, Any]:
+    check_task_termination(settings, f"分片分析前: {chunk.index}/{chunk.total}")
     prompt = build_prompt(settings, summary, chunk)
     response = await request_llm(context, settings, prompt, summary=summary, chunk=chunk, purpose="分片分析")
+    check_task_termination(settings, f"分片分析模型返回后: {chunk.index}/{chunk.total}")
     ensure_usable_llm_response(response)
     raw_text = extract_response_text(response)
     analysis = await parse_or_repair_analysis(context, settings, summary, chunk, raw_text)
@@ -73,6 +76,7 @@ async def refine_merged_analysis_with_usage(
     summary: DiffSummary,
     merged_analysis: dict[str, Any],
 ) -> tuple[dict[str, Any], TokenUsage]:
+    check_task_termination(settings, "总结模型分析前")
     prompt = build_refinement_prompt(settings, summary, merged_analysis)
     token_usage = TokenUsage()
     try:
@@ -90,19 +94,29 @@ async def refine_merged_analysis_with_usage(
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
         return enforce_change_coverage(summary, summary.chunks, parsed), token_usage
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         record_model_error(settings, "summary_refine_failed", exc, summary=summary)
         logger.warning("[%s] 总结模型分析失败，使用程序合并结果: %s", PLUGIN_NAME, exc)
         return enforce_change_coverage(summary, summary.chunks, merged_analysis), token_usage
 
 async def analyze_chunks(context: Any, settings: PluginConfig, summary: DiffSummary) -> list[ChunkAnalysis]:
+    check_task_termination(settings, "模型分片任务创建前")
     concurrency = max(1, int(getattr(settings, "model_concurrency", 1) or 1))
     semaphore = asyncio.Semaphore(concurrency)
     tasks = [
-        analyze_chunk_with_retry(context, settings, summary, chunk, semaphore)
+        asyncio.create_task(analyze_chunk_with_retry(context, settings, summary, chunk, semaphore))
         for chunk in summary.chunks
     ]
-    results = await asyncio.gather(*tasks)
+    try:
+        results = await asyncio.gather(*tasks)
+    except TaskTerminatedError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    check_task_termination(settings, "模型分片任务完成后")
     ordered_results = order_chunk_results(summary.chunks, results)
     return await refine_results_with_dynamic_context_queue(
         context,
@@ -121,6 +135,7 @@ async def refine_results_with_dynamic_context_queue(
     results: list[ChunkAnalysis],
     semaphore: asyncio.Semaphore,
 ) -> list[ChunkAnalysis]:
+    check_task_termination(settings, "动态补充队列开始前")
     if not getattr(settings, "enable_dynamic_context_queue", True):
         return results
 
@@ -151,6 +166,7 @@ async def refine_results_with_dynamic_context_queue(
     total_auto_generated_requests = 0
 
     for round_index in range(1, max_rounds + 1):
+        check_task_termination(settings, f"动态补充第 {round_index} 轮前")
         round_tasks: list[DynamicContextTask] = []
         round_uncertainty_count = 0
         round_request_count = 0
@@ -261,12 +277,18 @@ async def refine_results_with_dynamic_context_queue(
         if not round_tasks:
             break
 
-        round_results = await asyncio.gather(
-            *[
-                analyze_dynamic_context_task(context, settings, summary, task, semaphore)
-                for task in round_tasks
-            ]
-        )
+        running_round_tasks = [
+            asyncio.create_task(analyze_dynamic_context_task(context, settings, summary, task, semaphore))
+            for task in round_tasks
+        ]
+        try:
+            round_results = await asyncio.gather(*running_round_tasks)
+        except TaskTerminatedError:
+            for task in running_round_tasks:
+                task.cancel()
+            await asyncio.gather(*running_round_tasks, return_exceptions=True)
+            raise
+        check_task_termination(settings, f"动态补充第 {round_index} 轮后")
         total_enqueued += len(round_tasks)
         round_success = sum(1 for result in round_results if not result.error)
         round_failed = len(round_results) - round_success
@@ -336,6 +358,7 @@ async def analyze_chunk_with_retry(
     last_result: ChunkAnalysis | None = None
 
     for provider_index, provider_id in enumerate(provider_ids):
+        check_task_termination(settings, f"Provider 分片分析前: {provider_label(provider_id)}")
         result = await analyze_chunk_with_retry_attempt(
             context,
             settings,
@@ -394,8 +417,11 @@ async def analyze_chunk_with_retry_attempt(
     attempt: int,
     provider_id: str | None = None,
 ) -> ChunkAnalysis:
+    check_task_termination(settings, f"分片分析尝试前: {chunk.index}/{chunk.total}")
     try:
         return await analyze_chunk_once(context, settings, summary, chunk, semaphore, provider_id=provider_id)
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         max_retry_count = max(0, int(getattr(settings, "max_retry_count", 2) or 0))
         if len(chunk.files) <= 1 or attempt >= max_retry_count:
@@ -457,8 +483,8 @@ async def analyze_chunk_with_retry_attempt(
             max_retry_count,
             exc,
         )
-        retry_results = await asyncio.gather(
-            *[
+        retry_tasks = [
+            asyncio.create_task(
                 analyze_chunk_with_retry_attempt(
                     context,
                     settings,
@@ -468,9 +494,17 @@ async def analyze_chunk_with_retry_attempt(
                     attempt=attempt + 1,
                     provider_id=provider_id,
                 )
-                for retry_chunk in retry_chunks
-            ]
-        )
+            )
+            for retry_chunk in retry_chunks
+        ]
+        try:
+            retry_results = await asyncio.gather(*retry_tasks)
+        except TaskTerminatedError:
+            for task in retry_tasks:
+                task.cancel()
+            await asyncio.gather(*retry_tasks, return_exceptions=True)
+            raise
+        check_task_termination(settings, f"分片拆分重试后: {chunk.index}/{chunk.total}")
         try:
             merged = merge_chunk_analyses(summary, retry_chunks, retry_results)
         except Exception as merge_exc:
@@ -500,8 +534,11 @@ async def analyze_chunk_without_retry(
     *,
     provider_id: str | None = None,
 ) -> ChunkAnalysis:
+    check_task_termination(settings, f"分片无重试分析前: {chunk.index}/{chunk.total}")
     try:
         return await analyze_chunk_once(context, settings, summary, chunk, semaphore, provider_id=provider_id)
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         record_model_error(
             settings,
@@ -563,6 +600,7 @@ async def analyze_dynamic_context_task(
     last_result: ChunkAnalysis | None = None
 
     for provider_index, provider_id in enumerate(provider_ids):
+        check_task_termination(settings, f"动态补充 Provider 分析前: {provider_label(provider_id)}")
         try:
             result = await analyze_dynamic_context_task_once(
                 context,
@@ -572,6 +610,8 @@ async def analyze_dynamic_context_task(
                 semaphore,
                 provider_id=provider_id,
             )
+        except TaskTerminatedError:
+            raise
         except Exception as exc:
             record_model_error(
                 settings,
@@ -676,6 +716,7 @@ async def analyze_chunk_prompt_once(
     purpose: str = "分片分析",
     precovered_source_ids: set[str] | None = None,
 ) -> ChunkAnalysis:
+    check_task_termination(settings, f"{purpose} 请求前: {chunk.index}/{chunk.total}")
     async with semaphore:
         response = await request_llm(
             context,
@@ -687,6 +728,7 @@ async def analyze_chunk_prompt_once(
             chunk=chunk,
             purpose=purpose,
         )
+    check_task_termination(settings, f"{purpose} 请求后: {chunk.index}/{chunk.total}")
     token_usage = extract_token_usage(response)
     ensure_usable_llm_response(response)
     raw_text = extract_response_text(response)
@@ -1204,6 +1246,7 @@ async def refine_analysis_with_tool_calls(
         if not isinstance(tool_calls, list) or not tool_calls:
             break
 
+        check_task_termination(settings, f"工具调用第 {round_index} 轮前")
         tool_results = await execute_tool_calls(
             settings,
             summary,
@@ -1244,7 +1287,8 @@ async def refine_analysis_with_tool_calls(
                     summary=summary,
                     chunk=chunk,
                     purpose="补充上下文分析",
-                )
+            )
+        check_task_termination(settings, f"补充上下文分析第 {round_index} 轮后")
         usage += extract_token_usage(response)
         ensure_usable_llm_response(response)
         raw_text = extract_response_text(response)
@@ -1350,6 +1394,7 @@ async def refine_chunk_analyses_with_usage(
     *,
     merge_error: str = "",
 ) -> tuple[dict[str, Any], TokenUsage]:
+    check_task_termination(settings, "分片结果总结前")
     prompt = build_chunk_refinement_prompt(settings, summary, chunks, results, merge_error=merge_error)
     token_usage = TokenUsage()
     try:
@@ -1367,6 +1412,8 @@ async def refine_chunk_analyses_with_usage(
         if parsed is None:
             raise ValueError("总结模型输出不是有效 JSON")
         return enforce_change_coverage(summary, chunks, parsed), token_usage
+    except TaskTerminatedError:
+        raise
     except Exception as exc:
         record_model_error(
             settings,
