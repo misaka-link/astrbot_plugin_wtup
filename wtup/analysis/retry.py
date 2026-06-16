@@ -12,7 +12,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME, PluginConfig
-from ..diff_collector import DiffChunk, DiffSummary, group_related_files
+from ..diff_collector import DiffChunk, DiffSummary
 from ..termination import TaskTerminatedError, check_task_termination
 from .client import request_llm
 from .coverage import collect_source_ids, enforce_change_coverage
@@ -180,7 +180,7 @@ async def refine_results_with_dynamic_context_queue(
             uncertainties = _analysis_uncertainties(source_result.analysis)
             context_requests = _analysis_context_requests(source_result.analysis)
             auto_request_count = 0
-            if uncertainties and not context_requests:
+            if round_index == 1 and uncertainties and not context_requests:
                 max_files = max(1, int(getattr(settings, "max_dynamic_files_per_request", 4) or 4))
                 context_requests = _auto_context_requests_from_uncertainties(
                     summary,
@@ -800,6 +800,15 @@ async def _prepare_dynamic_context_task(
     files = [source_info]
     seen_paths = {_clean_dynamic_path(source_info.get("filename"))}
     valid_missing_count = 0
+    skipped_too_large = 0
+    max_context_chars = max(0, int(getattr(settings, "max_dynamic_context_chars", 12000) or 0))
+    current_chars = _file_patch_chars(source_info)
+    if max_context_chars > 0 and current_chars > max_context_chars:
+        source_status = dict(source_status)
+        source_status["status"] = "too_large"
+        source_status["reason"] = f"源文件上下文 {current_chars} 字符超过动态补充上限 {max_context_chars}"
+        file_statuses[-1] = source_status
+        return None, "动态补充上下文超过字符上限", file_statuses
     for path in missing_files:
         if path in seen_paths:
             file_statuses.append({"role": "missing_file", "path": path, "status": "duplicate", "source": ""})
@@ -813,14 +822,29 @@ async def _prepare_dynamic_context_task(
             round_index=round_index,
             reason=str(request.get("reason") or ""),
         )
-        file_statuses.append(status)
         if file_info is None:
+            file_statuses.append(status)
             continue
+        file_chars = _file_patch_chars(file_info)
+        if max_context_chars > 0 and current_chars + file_chars > max_context_chars:
+            skipped_too_large += 1
+            oversized_status = dict(status)
+            oversized_status["status"] = "too_large"
+            oversized_status["reason"] = (
+                f"加入该文件后动态补充上下文约 {current_chars + file_chars} 字符，"
+                f"超过上限 {max_context_chars}"
+            )
+            file_statuses.append(oversized_status)
+            continue
+        file_statuses.append(status)
         files.append(file_info)
         seen_paths.add(path)
+        current_chars += file_chars
         valid_missing_count += 1
 
     if valid_missing_count <= 0:
+        if skipped_too_large:
+            return None, "动态补充上下文超过字符上限", file_statuses
         return None, "missing_files 均无法读取", file_statuses
 
     chunk = DiffChunk(
@@ -1058,8 +1082,6 @@ def _auto_context_requests_from_uncertainties(
 
     candidates = _mentioned_changed_files(summary, uncertainties, parent_paths)
     if not candidates:
-        candidates = _related_changed_files(summary, parent_paths)
-    if not candidates:
         return []
 
     source_file = next(
@@ -1072,7 +1094,7 @@ def _auto_context_requests_from_uncertainties(
     )
     if not source_file:
         return []
-    reason_text = "；".join(uncertainties[:3])[:500]
+    reason_text = "；".join(_context_actionable_uncertainties(uncertainties)[:3])[:500]
     return [
         {
             "source_file": source_file,
@@ -1085,7 +1107,8 @@ def _auto_context_requests_from_uncertainties(
 
 
 def _uncertainties_need_context(uncertainties: list[str]) -> bool:
-    text = "\n".join(str(item or "") for item in uncertainties)
+    actionable = _context_actionable_uncertainties(uncertainties)
+    text = "\n".join(actionable)
     if not text.strip():
         return False
     if "模型未主动覆盖" in text and "插件已按点名册补入" in text:
@@ -1112,8 +1135,42 @@ def _uncertainties_need_context(uncertainties: list[str]) -> bool:
     return any(indicator in text for indicator in indicators)
 
 
+def _context_actionable_uncertainties(uncertainties: list[str]) -> list[str]:
+    return [
+        text
+        for text in (str(item or "").strip() for item in uncertainties)
+        if text and not _is_external_uncertainty(text)
+    ]
+
+
+def _is_external_uncertainty(text: str) -> bool:
+    external_indicators = (
+        "实测",
+        "实际测试",
+        "实际游戏",
+        "官方更新日志",
+        "以官方",
+        "官方为准",
+        "是否启用",
+        "是否适用",
+        "全模式",
+        "是否已在游戏内实装",
+        "是否实装",
+        "需等实装",
+        "需以实装",
+        "游戏内显示",
+        "显示是否",
+        "维修费",
+        "收益",
+        "换算公式",
+        "公式未明确",
+        "未完全公开",
+    )
+    return any(indicator in text for indicator in external_indicators)
+
+
 def _mentioned_changed_files(summary: DiffSummary, uncertainties: list[str], parent_paths: set[str]) -> list[str]:
-    text = "\n".join(uncertainties)
+    text = "\n".join(_context_actionable_uncertainties(uncertainties))
     result: list[str] = []
     seen: set[str] = set()
     for file_info in summary.files:
@@ -1128,37 +1185,6 @@ def _mentioned_changed_files(summary: DiffSummary, uncertainties: list[str], par
         seen.add(path)
         result.append(path)
     return result
-
-
-def _related_changed_files(summary: DiffSummary, parent_paths: set[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for group in group_related_files(summary.files):
-        group_paths = [_clean_dynamic_path(file_info.get("filename")) for file_info in group]
-        if not any(path in parent_paths for path in group_paths):
-            continue
-        for path in group_paths:
-            if not path or path in parent_paths or path in seen:
-                continue
-            seen.add(path)
-            result.append(path)
-    parent_directory_suffixes = {_dynamic_directory_suffix(path) for path in parent_paths}
-    parent_directory_suffixes.discard(("", ""))
-    for file_info in summary.files:
-        path = _clean_dynamic_path(file_info.get("filename"))
-        if not path or path in parent_paths or path in seen:
-            continue
-        if _dynamic_directory_suffix(path) not in parent_directory_suffixes:
-            continue
-        seen.add(path)
-        result.append(path)
-    return result
-
-
-def _dynamic_directory_suffix(path: str) -> tuple[str, str]:
-    directory, _, basename = path.rpartition("/")
-    _stem, dot, suffix = basename.rpartition(".")
-    return directory.lower(), suffix.lower() if dot else ""
 
 
 def _analysis_resolved_uncertainties(analysis: dict[str, Any]) -> list[str]:

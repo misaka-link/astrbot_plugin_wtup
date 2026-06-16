@@ -71,6 +71,7 @@ context_requests 示例：
 要求：
 - source_file 必须是当前判断信息不足的文件路径。
 - missing_files 只填写需要一起分析的强相关文件路径，不要填写目录、通配符或模糊描述。
+- 只有能被补充文件实际解决的问题才写 context_requests；需要实测、官方确认、经济公式或游戏内显示验证的问题只写入 uncertainties。
 - reason 写清楚缺这些文件会影响哪个判断。
 - priority 只能写 高/中/低。
 - 如果不需要动态补充，请输出空数组或省略 context_requests。{remaining_text}
@@ -234,9 +235,10 @@ JSON 字段如下：
 1. 用中文。
 2. 只能使用上一次分析 JSON、当前动态补充请求和下面提供的补充文件内容。
 3. 如果补充文件解决了原来的不确定点，请把已解决的不确定点原文写入 resolved_uncertainties。
-4. 如果仍缺少其他强相关文件，请继续输出 context_requests；否则输出空数组或省略。
-5. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
-6. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
+4. 只输出这次补充直接新增或修正的条目，不要重复上一次分析已经覆盖的内容。
+5. 如果仍缺少其他强相关文件，请继续输出 context_requests；否则输出空数组或省略。
+6. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
+7. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
 {_dynamic_context_protocol_text(settings, remaining_rounds=remaining_rounds)}
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}

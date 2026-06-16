@@ -190,7 +190,7 @@
   "enable_dynamic_context_queue": {
     "type": "bool",
     "description": "启用动态补充请求队列",
-    "hint": "默认开启。模型在 context_requests 中说明哪个文件缺少哪些文件后，插件会把源文件和缺少文件放入下一轮模型请求继续分析；如果模型只写 uncertainties 但漏写 context_requests，插件会按不确定点提到或同组相关文件自动生成补充请求，并记录自动生成数量。",
+    "hint": "默认开启。模型在 context_requests 中说明哪个文件缺少哪些文件后，插件会把源文件和缺少文件放入下一轮模型请求继续分析；如果模型只写 uncertainties 但漏写 context_requests，插件只会按不确定点中明确点名的变更文件自动生成补充请求，不再按同目录或同后缀猜测补充文件。",
     "default": true
   },
   "max_dynamic_context_rounds": {
@@ -210,6 +210,12 @@
     "description": "每个动态请求最多补充文件数",
     "hint": "限制单个 context_requests.missing_files 最多带入多少个缺少文件，避免单次补充请求过大。",
     "default": 4
+  },
+  "max_dynamic_context_chars": {
+    "type": "int",
+    "description": "动态补充上下文字符上限",
+    "hint": "限制单个动态补充请求实际带入模型的文件上下文字符数。默认 12000；设置为 0 表示不限制。超过上限的缺少文件会跳过，全部缺少文件都超限时本次动态补充请求会跳过。",
+    "default": 12000
   },
   "clear_cache_files": {
     "type": "bool",

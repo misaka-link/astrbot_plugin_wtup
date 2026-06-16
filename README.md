@@ -80,10 +80,11 @@ mode: commit
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
-- `enable_dynamic_context_queue`：是否启用动态补充请求队列，默认开启。模型在 `context_requests` 中说明哪个文件缺少哪些文件后，插件会把这些文件放入下一轮请求继续分析；如果模型只写了不确定点但漏写 `context_requests`，插件会按不确定点提到的文件或同组相关文件自动生成补充请求。
+- `enable_dynamic_context_queue`：是否启用动态补充请求队列，默认开启。模型在 `context_requests` 中说明哪个文件缺少哪些文件后，插件会把这些文件放入下一轮请求继续分析；如果模型只写了不确定点但漏写 `context_requests`，插件只会按不确定点中明确点名的变更文件自动生成补充请求，不再按同目录或同后缀猜测补充文件。
 - `max_dynamic_context_rounds`：动态补充最大轮数，默认 1；设置为 0 等同关闭动态补充队列。
 - `max_dynamic_context_requests`：每次更新最多实际入队的动态补充请求数，默认 8；设置为 0 表示不执行动态补充。
 - `max_dynamic_files_per_request`：每个动态补充请求最多带入的缺少文件数，默认 4。
+- `max_dynamic_context_chars`：单个动态补充请求最多带入模型的文件上下文字符数，默认 12000；设置为 0 表示不限制。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
 - `terminate_running_task`：终止当前正在运行的任务，默认关闭。开启后当前检查会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中尽快停止，且不会把本次 commit 标记为完成；终止后会自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
@@ -168,11 +169,11 @@ GitHub 请求失败会按 `github_max_retry_count` 重试，默认最多重试 4
 
 工具调用最多执行 `max_tool_call_rounds` 轮；如果模型继续请求但已超限，或路径不安全、文件不存在、GitHub 拉取失败，插件会把失败原因作为工具结果返回，要求模型写入 `uncertainties`，不会让模型编造。
 
-`enable_dynamic_context_queue` 默认开启。分片模型如果因为缺少关联文件无法确定某项改动，需要在 JSON 顶层输出 `context_requests`，格式为 `source_file`、`missing_files`、`reason` 和 `priority`。插件会校验路径安全、去重并按 `max_dynamic_files_per_request` 限制单个请求文件数，然后把 `source_file` 和 `missing_files` 组成下一轮动态补充分片继续分析。`missing_files` 如果在本次 diff 中，会直接使用对应 patch；如果不在本次 diff 中，会尝试读取目标 head commit 下的文件全文，并复用 GitHub 文件缓存和 `max_tool_result_chars` 截断限制。
+`enable_dynamic_context_queue` 默认开启。分片模型如果因为缺少关联文件无法确定某项改动，需要在 JSON 顶层输出 `context_requests`，格式为 `source_file`、`missing_files`、`reason` 和 `priority`。插件会校验路径安全、去重，并按 `max_dynamic_files_per_request` 和 `max_dynamic_context_chars` 限制单个请求的文件数量与上下文大小，然后把 `source_file` 和 `missing_files` 组成下一轮动态补充分片继续分析。`missing_files` 如果在本次 diff 中，会直接使用对应 patch；如果不在本次 diff 中，会尝试读取目标 head commit 下的文件全文，并复用 GitHub 文件缓存和 `max_tool_result_chars` 截断限制。
 
-如果模型只把问题写进 `uncertainties`，但没有输出 `context_requests`，插件不会直接放弃补充。它会先从不确定点文本里识别本次 diff 中被点名的其他文件；如果没有明确点名，再按已有文件关联分组寻找同目录、同后缀、同实体名的相关改动，并自动生成一条动态补充请求。自动生成的请求会带有 `auto_generated` 标记，并受 `max_dynamic_context_requests` 和 `max_dynamic_files_per_request` 继续限制，避免一次补太多。
+如果模型只把问题写进 `uncertainties`，但没有输出 `context_requests`，插件只会在第一轮初始分片结果中尝试自动补充，并且只从不确定点文本里识别本次 diff 中被明确点名的其他文件；没有明确文件路径或文件名时不会再按同目录、同后缀、同组关系猜测补充。需要实测、官方确认、经济公式或游戏内显示验证的不确定点不会触发自动补充，只会保留到报告中。自动生成的请求会带有 `auto_generated` 标记，并受 `max_dynamic_context_requests`、`max_dynamic_files_per_request` 和 `max_dynamic_context_chars` 继续限制，避免一次补太多。
 
-动态补充最多执行 `max_dynamic_context_rounds` 轮，每次更新最多实际入队 `max_dynamic_context_requests` 个请求。重复请求、超过上限、路径不安全、文件不存在或 GitHub 拉取失败都会写入任务日志；失败的动态补充不会让模型编造，仍会保留为不确定点。动态补充结果会合并回触发它的原分片，如果模型在补充结果中输出 `resolved_uncertainties`，插件会按原文移除对应已解决的不确定点。
+动态补充最多执行 `max_dynamic_context_rounds` 轮，每次更新最多实际入队 `max_dynamic_context_requests` 个请求。重复请求、超过上限、上下文过大、路径不安全、文件不存在或 GitHub 拉取失败都会写入任务日志；失败的动态补充不会让模型编造，仍会保留为不确定点。动态补充结果会合并回触发它的原分片，如果模型在补充结果中输出 `resolved_uncertainties`，插件会按原文移除对应已解决的不确定点。
 
 `enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
 

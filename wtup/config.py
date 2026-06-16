@@ -75,6 +75,7 @@ class PluginConfig:
     max_dynamic_context_rounds: int = 1
     max_dynamic_context_requests: int = 8
     max_dynamic_files_per_request: int = 4
+    max_dynamic_context_chars: int = 12000
     enable_pre_summary_report: bool = False
     clear_cache_files: bool = False
     terminate_running_task: bool = False
@@ -265,6 +266,7 @@ def load_config(config: Any) -> PluginConfig:
         max_dynamic_context_rounds=as_int(config_get(config, "max_dynamic_context_rounds", 1), 1, minimum=0),
         max_dynamic_context_requests=as_int(config_get(config, "max_dynamic_context_requests", 8), 8, minimum=0),
         max_dynamic_files_per_request=as_int(config_get(config, "max_dynamic_files_per_request", 4), 4, minimum=1),
+        max_dynamic_context_chars=as_int(config_get(config, "max_dynamic_context_chars", 12000), 12000, minimum=0),
         clear_cache_files=as_bool(config_get(config, "clear_cache_files", False)),
         terminate_running_task=as_bool(config_get(config, "terminate_running_task", False)),
         max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
