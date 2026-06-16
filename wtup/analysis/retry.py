@@ -12,7 +12,7 @@ except ModuleNotFoundError:
     logger = logging.getLogger(__name__)
 
 from ..config import PLUGIN_NAME, PluginConfig
-from ..diff_collector import DiffChunk, DiffSummary
+from ..diff_collector import DiffChunk, DiffSummary, group_related_files
 from .client import request_llm
 from .coverage import collect_source_ids, enforce_change_coverage
 from .errors import record_model_error
@@ -148,6 +148,7 @@ async def refine_results_with_dynamic_context_queue(
     total_limit_skipped = 0
     total_invalid_skipped = 0
     total_missing_files = 0
+    total_auto_generated_requests = 0
 
     for round_index in range(1, max_rounds + 1):
         round_tasks: list[DynamicContextTask] = []
@@ -157,10 +158,22 @@ async def refine_results_with_dynamic_context_queue(
         limit_skipped = 0
         invalid_skipped = 0
         missing_files = 0
+        auto_generated_requests = 0
 
         for parent_chunk, source_result in current_sources:
             uncertainties = _analysis_uncertainties(source_result.analysis)
             context_requests = _analysis_context_requests(source_result.analysis)
+            auto_request_count = 0
+            if uncertainties and not context_requests:
+                max_files = max(1, int(getattr(settings, "max_dynamic_files_per_request", 4) or 4))
+                context_requests = _auto_context_requests_from_uncertainties(
+                    summary,
+                    parent_chunk,
+                    uncertainties,
+                    max_files=max_files,
+                )
+                auto_request_count = len(context_requests)
+                auto_generated_requests += auto_request_count
             round_uncertainty_count += len(uncertainties)
             round_request_count += len(context_requests)
             if uncertainties or context_requests:
@@ -174,6 +187,7 @@ async def refine_results_with_dynamic_context_queue(
                         "不确定点数量": len(uncertainties),
                         "不确定点": uncertainties,
                         "补充请求数量": len(context_requests),
+                        "自动生成补充请求数量": auto_request_count,
                         "补充请求": context_requests,
                     },
                 )
@@ -232,6 +246,7 @@ async def refine_results_with_dynamic_context_queue(
                     "去重跳过": duplicate_skipped,
                     "超限跳过": limit_skipped,
                     "无效跳过": invalid_skipped,
+                    "自动生成补充请求": auto_generated_requests,
                     "缺失或拉取失败文件数": missing_files,
                     "累计已入队": total_enqueued + len(round_tasks),
                     "总请求上限": max_requests,
@@ -242,6 +257,7 @@ async def refine_results_with_dynamic_context_queue(
         total_limit_skipped += limit_skipped
         total_invalid_skipped += invalid_skipped
         total_missing_files += missing_files
+        total_auto_generated_requests += auto_generated_requests
         if not round_tasks:
             break
 
@@ -300,6 +316,7 @@ async def refine_results_with_dynamic_context_queue(
                 "去重跳过": total_duplicate_skipped,
                 "超限跳过": total_limit_skipped,
                 "无效跳过": total_invalid_skipped,
+                "自动生成补充请求": total_auto_generated_requests,
                 "缺失或拉取失败文件数": total_missing_files,
                 "最终剩余不确定点": final_uncertainty_count,
                 "最终剩余补充请求": pending_request_count,
@@ -980,6 +997,127 @@ def _analysis_context_requests(analysis: dict[str, Any]) -> list[dict[str, Any]]
     if not isinstance(requests, list):
         return []
     return [request for request in requests if isinstance(request, dict)]
+
+
+def _auto_context_requests_from_uncertainties(
+    summary: DiffSummary,
+    parent_chunk: DiffChunk,
+    uncertainties: list[str],
+    *,
+    max_files: int,
+) -> list[dict[str, Any]]:
+    if not _uncertainties_need_context(uncertainties):
+        return []
+
+    parent_paths = {_clean_dynamic_path(file_info.get("filename")) for file_info in parent_chunk.files}
+    parent_paths.discard("")
+    if not parent_paths:
+        return []
+
+    candidates = _mentioned_changed_files(summary, uncertainties, parent_paths)
+    if not candidates:
+        candidates = _related_changed_files(summary, parent_paths)
+    if not candidates:
+        return []
+
+    source_file = next(
+        (
+            _clean_dynamic_path(file_info.get("filename"))
+            for file_info in parent_chunk.files
+            if _clean_dynamic_path(file_info.get("filename")) in parent_paths
+        ),
+        "",
+    )
+    if not source_file:
+        return []
+    reason_text = "；".join(uncertainties[:3])[:500]
+    return [
+        {
+            "source_file": source_file,
+            "missing_files": candidates[:max_files],
+            "reason": f"模型写入不确定点但未输出 context_requests，插件按相关文件自动补充。{reason_text}",
+            "priority": "中",
+            "auto_generated": "是",
+        }
+    ]
+
+
+def _uncertainties_need_context(uncertainties: list[str]) -> bool:
+    text = "\n".join(str(item or "") for item in uncertainties)
+    if not text.strip():
+        return False
+    if "模型未主动覆盖" in text and "插件已按点名册补入" in text:
+        return False
+    indicators = (
+        "缺少",
+        "缺失",
+        "缺乏",
+        "信息不足",
+        "上下文不足",
+        "无法确认",
+        "无法确定",
+        "不能确认",
+        "不能确定",
+        "需要对比",
+        "需要结合",
+        "需要关联",
+        "需要更多上下文",
+        "需要完整文件",
+        "同目录",
+        "同组",
+        "关联文件",
+    )
+    return any(indicator in text for indicator in indicators)
+
+
+def _mentioned_changed_files(summary: DiffSummary, uncertainties: list[str], parent_paths: set[str]) -> list[str]:
+    text = "\n".join(uncertainties)
+    result: list[str] = []
+    seen: set[str] = set()
+    for file_info in summary.files:
+        path = _clean_dynamic_path(file_info.get("filename"))
+        if not path or path in parent_paths:
+            continue
+        basename = path.rsplit("/", 1)[-1]
+        if path not in text and basename not in text:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _related_changed_files(summary: DiffSummary, parent_paths: set[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in group_related_files(summary.files):
+        group_paths = [_clean_dynamic_path(file_info.get("filename")) for file_info in group]
+        if not any(path in parent_paths for path in group_paths):
+            continue
+        for path in group_paths:
+            if not path or path in parent_paths or path in seen:
+                continue
+            seen.add(path)
+            result.append(path)
+    parent_directory_suffixes = {_dynamic_directory_suffix(path) for path in parent_paths}
+    parent_directory_suffixes.discard(("", ""))
+    for file_info in summary.files:
+        path = _clean_dynamic_path(file_info.get("filename"))
+        if not path or path in parent_paths or path in seen:
+            continue
+        if _dynamic_directory_suffix(path) not in parent_directory_suffixes:
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _dynamic_directory_suffix(path: str) -> tuple[str, str]:
+    directory, _, basename = path.rpartition("/")
+    _stem, dot, suffix = basename.rpartition(".")
+    return directory.lower(), suffix.lower() if dot else ""
+
 
 def _analysis_resolved_uncertainties(analysis: dict[str, Any]) -> list[str]:
     if not isinstance(analysis, dict):

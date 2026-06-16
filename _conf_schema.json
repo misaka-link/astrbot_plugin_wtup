@@ -184,7 +184,7 @@
   "enable_dynamic_context_queue": {
     "type": "bool",
     "description": "启用动态补充请求队列",
-    "hint": "默认开启。模型在 context_requests 中说明哪个文件缺少哪些文件后，插件会把源文件和缺少文件放入下一轮模型请求继续分析，并记录原始不确定点和补充请求数量。",
+    "hint": "默认开启。模型在 context_requests 中说明哪个文件缺少哪些文件后，插件会把源文件和缺少文件放入下一轮模型请求继续分析；如果模型只写 uncertainties 但漏写 context_requests，插件会按不确定点提到或同组相关文件自动生成补充请求，并记录自动生成数量。",
     "default": true
   },
   "max_dynamic_context_rounds": {

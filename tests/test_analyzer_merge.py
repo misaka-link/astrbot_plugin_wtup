@@ -350,7 +350,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load_config({"max_input_tokens": 32, "max_input_token_unit": "K"}).max_input_token_limit, 32000)
         self.assertEqual(load_config({"max_input_tokens": 1, "max_input_token_unit": "M"}).max_input_token_limit, 1000000)
 
-    def test_glm_friendly_split_defaults_are_loaded_without_schema(self) -> None:
+    def test_long_context_split_defaults_are_loaded_without_schema(self) -> None:
         settings = load_config({})
 
         self.assertEqual(settings.max_files_per_report, 150)
@@ -799,6 +799,57 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enqueue_metadata["本轮不确定点数量"], 1)
         self.assertEqual(enqueue_metadata["本轮补充请求数量"], 1)
         self.assertEqual(enqueue_metadata["实际入队"], 1)
+
+    async def test_dynamic_context_queue_auto_generates_requests_from_uncertainties(self) -> None:
+        files = [
+            {"filename": "units/a.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+a"},
+            {"filename": "units/b.blkx", "status": "modified", "additions": 1, "deletions": 0, "patch": "+b"},
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="https://example.invalid/compare",
+            total_commits=1,
+            total_files=len(files),
+            additions=2,
+            deletions=0,
+            changed_files=len(files),
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=[files[0]], patch_chars=2)],
+        )
+        first = with_source_ids(analysis("参数调整", "初次分析"), "C001-001")
+        first["ai_analysis"]["uncertainties"] = ["缺少同目录配置无法确认同组参数影响"]
+        first["context_requests"] = []
+        second = with_source_ids(analysis("参数调整", "自动补充后分析"), "C002-001")
+        second["resolved_uncertainties"] = ["缺少同目录配置无法确认同组参数影响"]
+        context = SequenceContext([json_response(first), json_response(second)])
+        events: list[tuple[str, dict]] = []
+        settings = replace(
+            load_config(
+                {
+                    "enable_dynamic_context_queue": True,
+                    "max_dynamic_context_rounds": 1,
+                    "max_dynamic_context_requests": 4,
+                }
+            ),
+            task_log_recorder=lambda event, metadata: events.append((event, metadata)) or len(events),
+        )
+
+        results = await analyze_chunks(context, settings, summary)
+
+        self.assertEqual(context.calls, 2)
+        self.assertIn("units/b.blkx", context.prompts[1])
+        items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
+        self.assertEqual(items, ["初次分析", "自动补充后分析"])
+        scan_metadata = next(metadata for event, metadata in events if event == "动态补充扫描")
+        enqueue_metadata = next(metadata for event, metadata in events if event == "动态补充入队")
+        summary_metadata = next(metadata for event, metadata in events if event == "动态补充汇总")
+        self.assertEqual(scan_metadata["补充请求数量"], 1)
+        self.assertEqual(scan_metadata["自动生成补充请求数量"], 1)
+        self.assertEqual(enqueue_metadata["实际入队"], 1)
+        self.assertEqual(enqueue_metadata["自动生成补充请求"], 1)
+        self.assertEqual(summary_metadata["自动生成补充请求"], 1)
 
     async def test_dynamic_context_queue_can_be_disabled_for_analysis(self) -> None:
         summary = make_summary()

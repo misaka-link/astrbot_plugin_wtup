@@ -79,7 +79,7 @@ mode: commit
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
-- `enable_dynamic_context_queue`：是否启用动态补充请求队列，默认开启。模型在 `context_requests` 中说明哪个文件缺少哪些文件后，插件会把这些文件放入下一轮请求继续分析。
+- `enable_dynamic_context_queue`：是否启用动态补充请求队列，默认开启。模型在 `context_requests` 中说明哪个文件缺少哪些文件后，插件会把这些文件放入下一轮请求继续分析；如果模型只写了不确定点但漏写 `context_requests`，插件会按不确定点提到的文件或同组相关文件自动生成补充请求。
 - `max_dynamic_context_rounds`：动态补充最大轮数，默认 1；设置为 0 等同关闭动态补充队列。
 - `max_dynamic_context_requests`：每次更新最多实际入队的动态补充请求数，默认 8；设置为 0 表示不执行动态补充。
 - `max_dynamic_files_per_request`：每个动态补充请求最多带入的缺少文件数，默认 4。
@@ -164,6 +164,8 @@ https://github.com/settings/tokens
 
 `enable_dynamic_context_queue` 默认开启。分片模型如果因为缺少关联文件无法确定某项改动，需要在 JSON 顶层输出 `context_requests`，格式为 `source_file`、`missing_files`、`reason` 和 `priority`。插件会校验路径安全、去重并按 `max_dynamic_files_per_request` 限制单个请求文件数，然后把 `source_file` 和 `missing_files` 组成下一轮动态补充分片继续分析。`missing_files` 如果在本次 diff 中，会直接使用对应 patch；如果不在本次 diff 中，会尝试读取目标 head commit 下的文件全文，并复用 GitHub 文件缓存和 `max_tool_result_chars` 截断限制。
 
+如果模型只把问题写进 `uncertainties`，但没有输出 `context_requests`，插件不会直接放弃补充。它会先从不确定点文本里识别本次 diff 中被点名的其他文件；如果没有明确点名，再按已有文件关联分组寻找同目录、同后缀、同实体名的相关改动，并自动生成一条动态补充请求。自动生成的请求会带有 `auto_generated` 标记，并受 `max_dynamic_context_requests` 和 `max_dynamic_files_per_request` 继续限制，避免一次补太多。
+
 动态补充最多执行 `max_dynamic_context_rounds` 轮，每次更新最多实际入队 `max_dynamic_context_requests` 个请求。重复请求、超过上限、路径不安全、文件不存在或 GitHub 拉取失败都会写入任务日志；失败的动态补充不会让模型编造，仍会保留为不确定点。动态补充结果会合并回触发它的原分片，如果模型在补充结果中输出 `resolved_uncertainties`，插件会按原文移除对应已解决的不确定点。
 
 `enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
@@ -197,7 +199,7 @@ https://github.com/settings/tokens
 
 每次检查还会额外生成一份任务流水日志，保存本次任务从开始、GitHub 获取、diff 摘要、模型分析、报告生成到推送结束的全流程记录。每一次模型请求都会记录用途、“第几次模型请求”、Provider、分片信息、估算输入 token 数量、请求耗时和 Provider 返回的真实 token usage，不记录模型输入正文；模型工具调用会单独记录工具名、路径、原因、来源、结果、返回字符数和是否截断，方便按单次任务回溯问题。
 
-启用动态补充队列时，任务日志还会记录“动态补充扫描”“动态补充入队”“动态补充完成”和“动态补充汇总”。其中会写清楚本轮原本有几个不确定点、几个需要补充的 `context_requests`、实际入队几个、去重/超限/无效跳过几个、哪些文件补充成功或失败、补充后新增和剩余的不确定点数量，便于回溯模型到底缺了哪些文件。
+启用动态补充队列时，任务日志还会记录“动态补充扫描”“动态补充入队”“动态补充完成”和“动态补充汇总”。其中会写清楚本轮原本有几个不确定点、几个需要补充的 `context_requests`、程序自动生成了几个补充请求、实际入队几个、去重/超限/无效跳过几个、哪些文件补充成功或失败、补充后新增和剩余的不确定点数量，便于回溯模型到底缺了哪些文件。
 
 ## 数据持久化
 
