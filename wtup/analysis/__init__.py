@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .client import generate_analysis_from_prompt, request_llm
+from .coverage import build_change_manifest, collect_source_ids, enforce_change_coverage, render_change_manifest
 from .errors import record_model_error
 from .fallback import fallback_analysis
 from .merge import (
@@ -23,6 +24,10 @@ from .normalize import (
     first_non_empty_line,
     normalize_ai_analysis,
     normalize_analysis,
+    normalize_context_path,
+    normalize_context_paths,
+    normalize_context_requests,
+    normalize_coverage,
     normalize_importance,
     normalize_list,
     normalize_tool_calls,
@@ -34,6 +39,7 @@ from .normalize import (
 from .prompts import (
     build_chunk_refinement_payload,
     build_chunk_refinement_prompt,
+    build_dynamic_context_prompt,
     build_json_repair_prompt,
     build_prompt,
     build_refinement_prompt,
@@ -76,12 +82,15 @@ __all__ = [
     "analyze_chunks",
     "build_chunk_refinement_payload",
     "build_chunk_refinement_prompt",
+    "build_change_manifest",
+    "build_dynamic_context_prompt",
     "build_json_repair_prompt",
     "build_prompt",
     "build_refinement_prompt",
     "build_tool_refinement_prompt",
     "clean_section_title",
     "clean_pagination_text",
+    "collect_source_ids",
     "coerce_analysis",
     "dedupe_update_items",
     "ensure_usable_llm_response",
@@ -90,6 +99,7 @@ __all__ = [
     "extract_response_text",
     "extract_token_usage",
     "execute_tool_calls",
+    "enforce_change_coverage",
     "fallback_analysis",
     "file_patch_chars",
     "first_non_empty_line",
@@ -104,6 +114,10 @@ __all__ = [
     "merge_update_sections",
     "normalize_ai_analysis",
     "normalize_analysis",
+    "normalize_context_path",
+    "normalize_context_paths",
+    "normalize_context_requests",
+    "normalize_coverage",
     "normalize_importance",
     "normalize_list",
     "normalize_tool_calls",
@@ -118,6 +132,7 @@ __all__ = [
     "refine_merged_analysis",
     "refine_merged_analysis_with_usage",
     "request_llm",
+    "render_change_manifest",
     "safe_normalize_analysis",
     "split_chunk_for_retry",
     "split_chunks_by_token_limit",

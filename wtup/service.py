@@ -15,6 +15,7 @@ except ModuleNotFoundError:
 
 from .analyzer import (
     analyze_chunks,
+    enforce_change_coverage,
     fallback_analysis,
     estimate_chunk_input_tokens,
     merge_chunk_analyses,
@@ -398,6 +399,18 @@ class UpdateCheckService:
                 if analysis_needs_review(analysis) and not analysis_failure_reasons:
                     analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
             analysis_failed = bool(analysis_failure_reasons)
+            analysis = enforce_change_coverage(summary, summary.chunks, analysis)
+            coverage = analysis.get("coverage") if isinstance(analysis.get("coverage"), dict) else {}
+            if coverage:
+                self.runtime.record_task_log(
+                    "变更覆盖检查",
+                    {
+                        "应覆盖变更点": coverage.get("expected", 0),
+                        "已覆盖变更点": coverage.get("covered", 0),
+                        "未覆盖变更点": coverage.get("missing", 0),
+                        "未覆盖编号": coverage.get("missing_source_ids", []),
+                    },
+                )
             if not analysis_failed and analysis_source == "model":
                 self.analysis_cache.write(
                     settings=self.settings,

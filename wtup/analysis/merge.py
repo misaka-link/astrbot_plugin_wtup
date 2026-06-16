@@ -17,6 +17,9 @@ from .models import ChunkAnalysis
 from .normalize import clean_pagination_text, normalize_analysis, normalize_importance, normalize_update_items
 
 
+MERGED_AI_ANALYSIS_ITEM_LIMIT = 50
+
+
 def merge_chunk_analyses(
     summary: DiffSummary,
     chunks: list[DiffChunk],
@@ -34,21 +37,21 @@ def merge_chunk_analyses(
         clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("changed_content", [])
-    )[:10]
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
     player_impact = unique_preserve_order(
         clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("player_impact", [])
-    )[:10]
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
     uncertainties = unique_preserve_order(
         clean_pagination_text(item)
         for analysis in analyses
         for item in get_ai_analysis(analysis).get("uncertainties", [])
-    )[:10]
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
     if any(result.error for result in ordered_results):
         uncertainties = unique_preserve_order(
             [*uncertainties, "部分文件模型分析失败，需要结合 GitHub 原始 diff 复核。"]
-        )[:10]
+        )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
 
     recommendation = first_recommendation_by_importance(analyses) or "建议关注本次更新，并结合游戏内实装情况复核。"
     summary_text = f"本次更新共 {summary.total_files} 个文件。"
@@ -105,7 +108,7 @@ def merge_update_sections(analyses: list[dict[str, Any]]) -> list[dict[str, Any]
             if not isinstance(section, dict):
                 continue
             title = clean_section_title(section.get("title"))
-            items = normalize_update_items(section.get("items"), limit=100)
+            items = normalize_update_items(section.get("items"), limit=200)
             if not items:
                 continue
             if title not in index_by_title:
@@ -131,13 +134,29 @@ def clean_section_title(value: Any) -> str:
 def dedupe_update_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
+    index_by_text: dict[str, int] = {}
     for item in items:
         text = clean_pagination_text(item.get("text")) if isinstance(item, dict) else ""
-        if not text or text in seen:
+        if not text:
+            continue
+        children = item.get("children") if isinstance(item.get("children"), list) else []
+        source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+        if text in seen:
+            existing = result[index_by_text[text]]
+            existing["source_ids"] = unique_preserve_order(
+                [*existing.get("source_ids", []), *source_ids]
+            )
+            existing["children"] = dedupe_update_items([*existing.get("children", []), *children])
+            if not existing["source_ids"]:
+                existing.pop("source_ids", None)
             continue
         seen.add(text)
-        children = item.get("children") if isinstance(item.get("children"), list) else []
-        result.append({"text": text, "children": dedupe_update_items(children)})
+        index_by_text[text] = len(result)
+        normalized = {"text": text, "children": dedupe_update_items(children)}
+        source_ids = unique_preserve_order(source_ids)
+        if source_ids:
+            normalized["source_ids"] = source_ids
+        result.append(normalized)
     return result
 
 def get_ai_analysis(analysis: dict[str, Any]) -> dict[str, Any]:

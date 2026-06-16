@@ -79,6 +79,10 @@ mode: commit
 - `max_tool_calls_per_round`：每轮最多工具调用数，默认 5。
 - `max_tool_result_chars`：单次工具结果最大字符数，默认 12000，超出会截断后再交给模型。
 - `tool_call_prompt`：工具调用提示词，用于约束模型什么时候申请补充上下文。
+- `enable_dynamic_context_queue`：是否启用动态补充请求队列，默认开启。模型在 `context_requests` 中说明哪个文件缺少哪些文件后，插件会把这些文件放入下一轮请求继续分析。
+- `max_dynamic_context_rounds`：动态补充最大轮数，默认 1；设置为 0 等同关闭动态补充队列。
+- `max_dynamic_context_requests`：每次更新最多实际入队的动态补充请求数，默认 8；设置为 0 表示不执行动态补充。
+- `max_dynamic_files_per_request`：每个动态补充请求最多带入的缺少文件数，默认 4。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 
@@ -134,6 +138,12 @@ https://github.com/settings/tokens
 
 为避免模型把内部拆分信息写进最终报告，标准化和合并阶段会清理 `本批 diff`、`当前分片`、`第几批` 等分页语境表述，统一改成面向整次更新的说法。这个清理是通用规则，不只针对某一类武器、载具或参数。
 
+为减少模型报告在标准化和合并阶段被截短，插件默认会保留更多模型输出内容：`update_sections` 最多保留 100 个分类、每个分类最多 500 条完整更新条目；`changed_content`、`player_impact`、`uncertainties` 等 AI 分析摘要字段最多保留 50 条。完整改动应优先写入 `update_sections`，AI 分析摘要只用于概括重点、影响和不确定点。
+
+插件会为每个分片生成“变更覆盖点名册”，按文件和连续 diff 变更块分配 `C001-001` 这类编号，并在模型提示词中要求每条 `update_sections.items` 或子条目写入对应 `source_ids`。模型返回、JSON 修复、工具补充、动态补充和总结模型整理后，程序都会保留这些编号。
+
+最终报告生成前还会执行一次覆盖检查：如果某个原始变更编号没有出现在任何报告条目的 `source_ids` 中，插件会自动追加“需复核的未覆盖变更”分类，把漏掉的原始变更按文件和 diff 摘要补回报告，并在 `coverage` 统计和任务日志“变更覆盖检查”中记录应覆盖、已覆盖和未覆盖数量。这样模型可以解释得不够好，但不能静默漏掉原始改动。
+
 `max_input_token_unit` 控制 `max_input_tokens` 的单位：`K` 表示千 token，`M` 表示百万 token。`max_input_tokens` 支持最多两位小数，例如 `0.25K` 表示 250 token，`1.5M` 表示 1,500,000 token。
 
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
@@ -151,6 +161,10 @@ https://github.com/settings/tokens
 `enable_model_tool_calls` 开启后，分片分析模型可以在 JSON 顶层输出 `tool_calls` 申请补充上下文。插件不会把文件系统直接交给模型，而是先校验工具名、路径、轮数、每轮数量和返回大小，再由插件执行工具并发起一次“补充上下文分析”模型请求。当前支持 `read_changed_patch`、`read_changed_file`、`search_changed_files`、`list_related_files`。其中 `read_changed_patch`、`search_changed_files`、`list_related_files` 只使用本次 compare/diff 已建立的本地索引；`read_changed_file` 会优先读取本地已有全文内容，本地没有时允许从 GitHub 拉取目标 head commit 下的文件全文，并按 `max_tool_result_chars` 截断。
 
 工具调用最多执行 `max_tool_call_rounds` 轮；如果模型继续请求但已超限，或路径不安全、文件不存在、GitHub 拉取失败，插件会把失败原因作为工具结果返回，要求模型写入 `uncertainties`，不会让模型编造。
+
+`enable_dynamic_context_queue` 默认开启。分片模型如果因为缺少关联文件无法确定某项改动，需要在 JSON 顶层输出 `context_requests`，格式为 `source_file`、`missing_files`、`reason` 和 `priority`。插件会校验路径安全、去重并按 `max_dynamic_files_per_request` 限制单个请求文件数，然后把 `source_file` 和 `missing_files` 组成下一轮动态补充分片继续分析。`missing_files` 如果在本次 diff 中，会直接使用对应 patch；如果不在本次 diff 中，会尝试读取目标 head commit 下的文件全文，并复用 GitHub 文件缓存和 `max_tool_result_chars` 截断限制。
+
+动态补充最多执行 `max_dynamic_context_rounds` 轮，每次更新最多实际入队 `max_dynamic_context_requests` 个请求。重复请求、超过上限、路径不安全、文件不存在或 GitHub 拉取失败都会写入任务日志；失败的动态补充不会让模型编造，仍会保留为不确定点。动态补充结果会合并回触发它的原分片，如果模型在补充结果中输出 `resolved_uncertainties`，插件会按原文移除对应已解决的不确定点。
 
 `enable_summary_model` 默认关闭。关闭时，插件使用程序内置规则把多次模型分析结果直接合并为最终报告。
 
@@ -182,6 +196,8 @@ https://github.com/settings/tokens
 配置 `analysis_file_groups` 后，群推送流程完成会把本次 `.log` 文件发送到这些群。纯群号会优先通过 OneBot `upload_group_file` 上传；如果平台或目标不支持文件发送，会直接跳过，不再兜底发送日志文本。开启 `enable_pre_summary_report` 且总结模型启用时，会发送分析前和分析后的两份日志文件。
 
 每次检查还会额外生成一份任务流水日志，保存本次任务从开始、GitHub 获取、diff 摘要、模型分析、报告生成到推送结束的全流程记录。每一次模型请求都会记录用途、“第几次模型请求”、Provider、分片信息、估算输入 token 数量、请求耗时和 Provider 返回的真实 token usage，不记录模型输入正文；模型工具调用会单独记录工具名、路径、原因、来源、结果、返回字符数和是否截断，方便按单次任务回溯问题。
+
+启用动态补充队列时，任务日志还会记录“动态补充扫描”“动态补充入队”“动态补充完成”和“动态补充汇总”。其中会写清楚本轮原本有几个不确定点、几个需要补充的 `context_requests`、实际入队几个、去重/超限/无效跳过几个、哪些文件补充成功或失败、补充后新增和剩余的不确定点数量，便于回溯模型到底缺了哪些文件。
 
 ## 数据持久化
 

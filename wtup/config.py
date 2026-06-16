@@ -7,12 +7,15 @@ from typing import Any, Callable
 
 
 PLUGIN_NAME = "astrbot_plugin_wtup"
-PLUGIN_VERSION = "0.1.2"
+PLUGIN_VERSION = "0.1.3"
 REPO_OWNER = "gszabi99"
 REPO_NAME = "War-Thunder-Datamine"
 REPO_FULL_NAME = f"{REPO_OWNER}/{REPO_NAME}"
 BRANCH_NAME = "master"
 DEFAULT_INTERVAL_MINUTES = 30
+DEFAULT_MAX_FILES_PER_REPORT = 150
+DEFAULT_MAX_INPUT_TOKENS = Decimal("0.10")
+DEFAULT_MAX_INPUT_TOKEN_UNIT = "M"
 DEFAULT_FOOTER_NOTE = "[gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine)"
 DEFAULT_ANALYSIS_PROMPT = (
     "请分析 War Thunder Datamine 的 GitHub commit 更新内容，参考 War Thunder Datamine 更新日志格式，"
@@ -67,6 +70,10 @@ class PluginConfig:
     max_tool_calls_per_round: int = 5
     max_tool_result_chars: int = 12000
     tool_call_prompt: str = DEFAULT_TOOL_CALL_PROMPT
+    enable_dynamic_context_queue: bool = True
+    max_dynamic_context_rounds: int = 1
+    max_dynamic_context_requests: int = 8
+    max_dynamic_files_per_request: int = 4
     enable_pre_summary_report: bool = False
     clear_cache_files: bool = False
     max_saved_artifacts: int = 5
@@ -200,13 +207,17 @@ def unique_provider_ids(provider_ids: list[str]) -> list[str]:
 
 def load_config(config: Any) -> PluginConfig:
     max_input_raw = config_get(config, "max_input_tokens", None)
-    max_input_tokens = as_decimal(max_input_raw, 0, minimum=Decimal("0"))
-    max_input_token_unit = normalize_token_unit(config_get(config, "max_input_token_unit", "K"))
-    if max_input_tokens <= 0:
+    max_input_token_unit = normalize_token_unit(config_get(config, "max_input_token_unit", DEFAULT_MAX_INPUT_TOKEN_UNIT))
+    if max_input_raw is None:
         legacy_max_chars = as_int(config_get(config, "max_patch_chars", 0), 0, minimum=0)
-        if legacy_max_chars > 0 and max_input_raw is None:
+        if legacy_max_chars > 0:
             max_input_tokens = as_decimal(Decimal(legacy_max_chars) / Decimal(1000), 0, minimum=Decimal("0"))
             max_input_token_unit = "K"
+        else:
+            max_input_tokens = DEFAULT_MAX_INPUT_TOKENS
+            max_input_token_unit = DEFAULT_MAX_INPUT_TOKEN_UNIT
+    else:
+        max_input_tokens = as_decimal(max_input_raw, DEFAULT_MAX_INPUT_TOKENS, minimum=Decimal("0"))
     return PluginConfig(
         provider_id=str(config_get(config, "provider_id", "") or "").strip(),
         summary_provider_id=str(config_get(config, "summary_provider_id", "") or "").strip(),
@@ -229,7 +240,11 @@ def load_config(config: Any) -> PluginConfig:
             minimum=1,
         ),
         github_token=str(config_get(config, "github_token", "") or "").strip(),
-        max_files_per_report=as_int(config_get(config, "max_files_per_report", 0), 0, minimum=0),
+        max_files_per_report=as_int(
+            config_get(config, "max_files_per_report", DEFAULT_MAX_FILES_PER_REPORT),
+            DEFAULT_MAX_FILES_PER_REPORT,
+            minimum=0,
+        ),
         max_input_tokens=max_input_tokens,
         max_input_token_unit=max_input_token_unit,
         max_retry_count=as_int(config_get(config, "max_retry_count", 2), 2, minimum=0),
@@ -241,6 +256,10 @@ def load_config(config: Any) -> PluginConfig:
             config_get(config, "tool_call_prompt", DEFAULT_TOOL_CALL_PROMPT)
             or DEFAULT_TOOL_CALL_PROMPT
         ),
+        enable_dynamic_context_queue=as_bool(config_get(config, "enable_dynamic_context_queue", True), True),
+        max_dynamic_context_rounds=as_int(config_get(config, "max_dynamic_context_rounds", 1), 1, minimum=0),
+        max_dynamic_context_requests=as_int(config_get(config, "max_dynamic_context_requests", 8), 8, minimum=0),
+        max_dynamic_files_per_request=as_int(config_get(config, "max_dynamic_files_per_request", 4), 4, minimum=1),
         clear_cache_files=as_bool(config_get(config, "clear_cache_files", False)),
         max_saved_artifacts=as_int(config_get(config, "max_saved_artifacts", 5), 5, minimum=0),
         enable_push_append_text=as_bool(config_get(config, "enable_push_append_text", False)),

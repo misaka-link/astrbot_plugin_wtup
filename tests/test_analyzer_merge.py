@@ -14,7 +14,10 @@ from wtup.analyzer import (
     ChunkAnalysis,
     TokenUsage,
     analyze_chunks,
+    build_change_manifest,
     build_chunk_refinement_payload,
+    collect_source_ids,
+    enforce_change_coverage,
     estimate_chunk_input_tokens,
     extract_token_usage,
     llm_failure_reason,
@@ -125,6 +128,115 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertEqual(parsed["ai_analysis"]["player_impact"], ["本次 diff 显示影响待确认"])
         self.assertEqual(parsed["ai_analysis"]["uncertainties"], ["本次 diff 信息不足"])
         self.assertEqual(parsed["recommendation"], "建议结合本次 diff 后续 diff 复核")
+
+    def test_model_json_normalization_keeps_context_requests(self) -> None:
+        payload = analysis("参数调整", "初次分析")
+        payload["context_requests"] = [
+            {
+                "source_file": "./a.blkx",
+                "missing_files": ["b.blkx", "../bad.blkx", "b.blkx"],
+                "reason": "当前分片缺少关联文件",
+                "priority": "高",
+            }
+        ]
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        self.assertEqual(
+            parsed["context_requests"],
+            [
+                {
+                    "source_file": "a.blkx",
+                    "missing_files": ["b.blkx"],
+                    "reason": "本次 diff 缺少关联文件",
+                    "priority": "高",
+                }
+            ],
+        )
+
+    def test_model_json_normalization_keeps_larger_report_limits(self) -> None:
+        payload = analysis("参数调整", "初次分析")
+        payload["update_sections"] = [
+            {
+                "title": "参数调整",
+                "items": [
+                    {"text": f"完整条目 {index}", "children": []}
+                    for index in range(30)
+                ],
+            }
+        ]
+        payload["ai_analysis"] = {
+            "changed_content": [f"改动摘要 {index}" for index in range(25)],
+            "player_impact": [f"影响摘要 {index}" for index in range(25)],
+            "uncertainties": [f"不确定点 {index}" for index in range(25)],
+            "recommendation": "建议关注",
+        }
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        self.assertEqual(len(parsed["update_sections"][0]["items"]), 30)
+        self.assertEqual(len(parsed["ai_analysis"]["changed_content"]), 25)
+        self.assertEqual(len(parsed["ai_analysis"]["player_impact"]), 25)
+        self.assertEqual(len(parsed["ai_analysis"]["uncertainties"]), 25)
+
+    def test_merge_keeps_more_ai_summary_items(self) -> None:
+        summary = make_summary()
+        payload = analysis("参数调整", "初次分析")
+        payload["ai_analysis"] = {
+            "changed_content": [f"改动摘要 {index}" for index in range(20)],
+            "player_impact": [f"影响摘要 {index}" for index in range(20)],
+            "uncertainties": [f"不确定点 {index}" for index in range(20)],
+            "recommendation": "建议关注",
+        }
+        second_payload = analysis("经济调整", "二次分析")
+        second_payload["ai_analysis"] = {
+            "changed_content": [f"改动摘要 {index}" for index in range(20, 40)],
+            "player_impact": [f"影响摘要 {index}" for index in range(20, 40)],
+            "uncertainties": [f"不确定点 {index}" for index in range(20, 40)],
+            "recommendation": "建议关注",
+        }
+
+        merged = merge_chunk_analyses(
+            summary,
+            summary.chunks[:2],
+            [
+                ChunkAnalysis(1, 2, payload),
+                ChunkAnalysis(2, 2, second_payload),
+            ],
+        )
+
+        self.assertEqual(len(merged["ai_analysis"]["changed_content"]), 40)
+        self.assertEqual(merged["ai_analysis"]["changed_content"][0], "改动摘要 0")
+        self.assertEqual(merged["ai_analysis"]["changed_content"][-1], "改动摘要 39")
+
+    def test_change_manifest_assigns_stable_source_ids(self) -> None:
+        summary = make_summary()
+
+        manifest = build_change_manifest(summary, summary.chunks[0])
+
+        self.assertEqual([entry.source_id for entry in manifest], ["C001-001"])
+        self.assertEqual(manifest[0].file_path, "a.blkx")
+        self.assertIn("新增/新值: a", manifest[0].description)
+
+    def test_normalization_preserves_source_ids_on_update_items(self) -> None:
+        payload = analysis("参数调整", "初次分析")
+        payload["update_sections"][0]["items"][0]["source_ids"] = ["C001-001"]
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        self.assertEqual(collect_source_ids(parsed), {"C001-001"})
+
+    def test_coverage_checker_appends_missing_change_entries(self) -> None:
+        summary = make_summary()
+        payload = analysis("参数调整", "模型只写了概括")
+
+        covered = enforce_change_coverage(summary, summary.chunks[:1], payload)
+
+        self.assertEqual(covered["coverage"]["expected"], 1)
+        self.assertEqual(covered["coverage"]["missing"], 1)
+        self.assertIn("C001-001", collect_source_ids(covered))
+        titles = [section["title"] for section in covered["update_sections"]]
+        self.assertIn("需复核的未覆盖变更", titles)
 
     def test_merge_cleans_pagination_section_titles(self) -> None:
         summary = make_summary()
@@ -238,6 +350,21 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(load_config({"max_input_tokens": 32, "max_input_token_unit": "K"}).max_input_token_limit, 32000)
         self.assertEqual(load_config({"max_input_tokens": 1, "max_input_token_unit": "M"}).max_input_token_limit, 1000000)
 
+    def test_glm_friendly_split_defaults_are_loaded_without_schema(self) -> None:
+        settings = load_config({})
+
+        self.assertEqual(settings.max_files_per_report, 150)
+        self.assertEqual(settings.max_input_tokens, Decimal("0.10"))
+        self.assertEqual(settings.max_input_token_unit, "M")
+        self.assertEqual(settings.max_input_token_limit, 100000)
+
+    def test_explicit_zero_keeps_unlimited_split_settings(self) -> None:
+        settings = load_config({"max_files_per_report": 0, "max_input_tokens": 0})
+
+        self.assertEqual(settings.max_files_per_report, 0)
+        self.assertEqual(settings.max_input_tokens, Decimal("0.00"))
+        self.assertEqual(settings.max_input_token_limit, 0)
+
     def test_token_limit_accepts_two_decimal_places(self) -> None:
         k_settings = load_config({"max_input_tokens": "0.25", "max_input_token_unit": "K"})
         m_settings = load_config({"max_input_tokens": 1.5, "max_input_token_unit": "M"})
@@ -288,6 +415,20 @@ class ConfigTest(unittest.TestCase):
         settings = load_config({"clear_cache_files": "开启"})
 
         self.assertTrue(settings.clear_cache_files)
+
+    def test_dynamic_context_queue_defaults_to_enabled_with_limits(self) -> None:
+        settings = load_config({})
+
+        self.assertTrue(settings.enable_dynamic_context_queue)
+        self.assertEqual(settings.max_dynamic_context_rounds, 1)
+        self.assertEqual(settings.max_dynamic_context_requests, 8)
+        self.assertEqual(settings.max_dynamic_files_per_request, 4)
+
+    def test_dynamic_context_queue_can_be_disabled(self) -> None:
+        settings = load_config({"enable_dynamic_context_queue": "关闭", "max_dynamic_context_rounds": 0})
+
+        self.assertFalse(settings.enable_dynamic_context_queue)
+        self.assertEqual(settings.max_dynamic_context_rounds, 0)
 
 
 class FakeContext:
@@ -400,11 +541,13 @@ class AnalyzerSecondPassTest(unittest.IsolatedAsyncioTestCase):
         )
         context = FakeContext("这不是 JSON")
 
+        expected = enforce_change_coverage(summary, summary.chunks, merged)
+
         refined = await refine_merged_analysis(context, make_settings(), summary, merged)
 
         self.assertEqual(context.calls, 1)
-        self.assertEqual(refined["summary"], merged["summary"])
-        self.assertEqual(refined["update_sections"], merged["update_sections"])
+        self.assertEqual(refined["summary"], expected["summary"])
+        self.assertEqual(refined["update_sections"], expected["update_sections"])
 
     async def test_refine_chunk_analyses_uses_raw_chunk_json_when_merge_failed(self) -> None:
         summary = make_summary()
@@ -601,6 +744,97 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.prompts[0].find("请分析更新。") >= 0, True)
         self.assertEqual(context.kwargs[0]["chat_provider_id"], "analysis-provider")
 
+    async def test_dynamic_context_queue_enqueues_missing_diff_file_and_logs_counts(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = with_source_ids(analysis("参数调整", "初次分析"), "C001-001")
+        first["ai_analysis"]["uncertainties"] = ["缺少 b.blkx 无法确认影响"]
+        first["context_requests"] = [
+            {
+                "source_file": "a.blkx",
+                "missing_files": ["b.blkx"],
+                "reason": "需要 b 文件确认关联参数",
+                "priority": "高",
+            }
+        ]
+        second = with_source_ids(analysis("参数调整", "补充后分析"), "C002-001")
+        second["resolved_uncertainties"] = ["缺少 b.blkx 无法确认影响"]
+        context = SequenceContext([json_response(first), json_response(second)])
+        events: list[tuple[str, dict]] = []
+        settings = replace(
+            load_config(
+                {
+                    "enable_dynamic_context_queue": True,
+                    "max_dynamic_context_rounds": 1,
+                    "max_dynamic_context_requests": 4,
+                }
+            ),
+            task_log_recorder=lambda event, metadata: events.append((event, metadata)) or len(events),
+        )
+
+        results = await analyze_chunks(context, settings, single_summary)
+
+        self.assertEqual(context.calls, 2)
+        self.assertIn("当前动态补充请求", context.prompts[1])
+        items = [item["text"] for section in results[0].analysis["update_sections"] for item in section["items"]]
+        self.assertEqual(items, ["初次分析", "补充后分析"])
+        self.assertNotIn("缺少 b.blkx 无法确认影响", results[0].analysis["ai_analysis"]["uncertainties"])
+        event_names = [event for event, _metadata in events]
+        self.assertIn("动态补充扫描", event_names)
+        self.assertIn("动态补充入队", event_names)
+        self.assertIn("动态补充汇总", event_names)
+        enqueue_metadata = next(metadata for event, metadata in events if event == "动态补充入队")
+        self.assertEqual(enqueue_metadata["本轮不确定点数量"], 1)
+        self.assertEqual(enqueue_metadata["本轮补充请求数量"], 1)
+        self.assertEqual(enqueue_metadata["实际入队"], 1)
+
+    async def test_dynamic_context_queue_can_be_disabled_for_analysis(self) -> None:
+        summary = make_summary()
+        single_summary = DiffSummary(
+            base_sha=summary.base_sha,
+            head_sha=summary.head_sha,
+            compare_url=summary.compare_url,
+            total_commits=summary.total_commits,
+            total_files=summary.total_files,
+            additions=summary.additions,
+            deletions=summary.deletions,
+            changed_files=summary.changed_files,
+            commits=summary.commits,
+            files=summary.files,
+            chunks=[summary.chunks[0]],
+        )
+        first = analysis("参数调整", "初次分析")
+        first["context_requests"] = [
+            {
+                "source_file": "a.blkx",
+                "missing_files": ["b.blkx"],
+                "reason": "需要 b 文件确认关联参数",
+                "priority": "高",
+            }
+        ]
+        context = SequenceContext([json_response(first)])
+
+        results = await analyze_chunks(
+            context,
+            load_config({"enable_dynamic_context_queue": False}),
+            single_summary,
+        )
+
+        self.assertEqual(context.calls, 1)
+        self.assertEqual(results[0].analysis["summary"], "初次分析")
+
     async def test_analyze_chunks_falls_back_to_backup_provider_on_request_error(self) -> None:
         summary = make_summary()
         single_summary = DiffSummary(
@@ -663,8 +897,8 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         context = SequenceContext(
             [
                 RuntimeError("primary provider failed"),
-                json_response(analysis("武器调整", "前半")),
-                json_response(analysis("经济调整", "后半")),
+                json_response(with_source_ids(analysis("武器调整", "前半"), "C001-001", "C002-001")),
+                json_response(with_source_ids(analysis("经济调整", "后半"), "C003-001", "C004-001")),
             ]
         )
         context.get_provider_by_id = lambda provider_id: object()
@@ -1042,8 +1276,8 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
         context = SequenceContext(
             [
                 empty_choice_response("model_context_window_exceeded"),
-                json_response(analysis("武器调整", "前半")),
-                json_response(analysis("经济调整", "后半")),
+                json_response(with_source_ids(analysis("武器调整", "前半"), "C001-001", "C002-001")),
+                json_response(with_source_ids(analysis("经济调整", "后半"), "C003-001", "C004-001")),
             ]
         )
 
@@ -1078,9 +1312,9 @@ class AnalyzerRequestFlowTest(unittest.IsolatedAsyncioTestCase):
             [
                 empty_choice_response("model_context_window_exceeded"),
                 empty_choice_response("model_context_window_exceeded"),
-                json_response(analysis("武器调整", "B")),
-                json_response(analysis("武器调整", "A")),
-                json_response(analysis("经济调整", "后半")),
+                json_response(with_source_ids(analysis("经济调整", "后半"), "C003-001", "C004-001")),
+                json_response(with_source_ids(analysis("武器调整", "A"), "C001-001")),
+                json_response(with_source_ids(analysis("武器调整", "B"), "C002-001")),
             ]
         )
         settings = make_settings()
@@ -1279,6 +1513,15 @@ class AnalyzerUtilityTest(unittest.TestCase):
 
 def json_response(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def with_source_ids(payload: dict, *source_ids: str) -> dict:
+    sections = payload.get("update_sections") if isinstance(payload.get("update_sections"), list) else []
+    if sections and isinstance(sections[0], dict):
+        items = sections[0].get("items") if isinstance(sections[0].get("items"), list) else []
+        if items and isinstance(items[0], dict):
+            items[0]["source_ids"] = list(source_ids)
+    return payload
 
 
 def empty_choice_response(finish_reason: str):
