@@ -375,13 +375,15 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(list_settings.admin_targets, ["123", "platform:private:user"])
         self.assertEqual(line_settings.admin_targets, ["123", "platform:private:user"])
 
-    def test_backup_provider_config_items_are_third_and_fourth(self) -> None:
+    def test_model_provider_config_items_are_grouped_first(self) -> None:
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(list(schema.keys())[:4], [
+        self.assertEqual(list(schema.keys())[:6], [
             "provider_id",
             "summary_provider_id",
+            "review_provider_id",
+            "review_quality_provider_id",
             "backup_provider_id_1",
             "backup_provider_id_2",
         ])
@@ -491,7 +493,7 @@ class ConfigTest(unittest.TestCase):
         settings = load_config({})
 
         self.assertFalse(settings.enable_review_model)
-        self.assertEqual(settings.review_mode, "auto")
+        self.assertEqual(settings.review_mode, "quality")
         self.assertEqual(settings.effective_review_provider_id, "")
         self.assertEqual(settings.effective_review_quality_provider_id, "")
         self.assertIn("质检模型", settings.review_prompt)

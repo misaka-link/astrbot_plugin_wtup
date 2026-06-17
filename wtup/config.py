@@ -78,7 +78,7 @@ class PluginConfig:
     push_append_text_template: str
     restore_default_prompts: bool = False
     enable_review_model: bool = False
-    review_mode: str = REVIEW_MODE_AUTO
+    review_mode: str = REVIEW_MODE_QUALITY
     review_provider_id: str = ""
     review_quality_provider_id: str = ""
     review_prompt: str = DEFAULT_REVIEW_PROMPT
@@ -327,7 +327,7 @@ def load_config(config: Any) -> PluginConfig:
         ),
         restore_default_prompts=as_bool(config_get(config, "restore_default_prompts", False)),
         enable_review_model=as_bool(config_get(config, "enable_review_model", False)),
-        review_mode=normalize_review_mode(config_get(config, "review_mode", REVIEW_MODE_AUTO)),
+        review_mode=normalize_review_mode(config_get(config, "review_mode", REVIEW_MODE_QUALITY)),
         review_provider_id=str(config_get(config, "review_provider_id", "") or "").strip(),
         review_quality_provider_id=str(config_get(config, "review_quality_provider_id", "") or "").strip(),
         review_prompt=str(config_get(config, "review_prompt", DEFAULT_REVIEW_PROMPT) or DEFAULT_REVIEW_PROMPT),

@@ -13,6 +13,20 @@
     "hint": "用于总计全部的大模型分析内容。留空时使用分析模型；分析模型也留空时使用 AstrBot 当前默认模型。",
     "default": ""
   },
+  "review_provider_id": {
+    "type": "string",
+    "description": "节能监督模型 Provider ID",
+    "_special": "select_provider",
+    "hint": "节能档/自动档普通复核使用。留空使用分析模型。建议使用便宜快速模型。",
+    "default": ""
+  },
+  "review_quality_provider_id": {
+    "type": "string",
+    "description": "质量监督模型 Provider ID",
+    "_special": "select_provider",
+    "hint": "质量档或自动升级质量档时使用。留空时优先使用节能监督模型，再留空使用分析模型。",
+    "default": ""
+  },
   "backup_provider_id_1": {
     "type": "string",
     "description": "备用模型 Provider ID 1",
@@ -105,28 +119,14 @@
   "review_mode": {
     "type": "string",
     "description": "监督模型预设",
-    "hint": "off=关闭；energy=节能档，只查漏编号、格式、模糊表述和必要影响说明；quality=质量档，会更细地检查解释、分类和参数含义；auto=自动档，平时节能，发现大量漏项或补充失败时升级质量档。推荐 auto。",
+    "hint": "off=关闭；energy=节能档，只查漏编号、格式、模糊表述和必要影响说明；quality=质量档，会更细地检查解释、分类和参数含义；auto=自动档，平时节能，发现大量漏项或补充失败时升级质量档。默认推荐 quality。",
     "options": [
       "off",
       "energy",
       "quality",
       "auto"
     ],
-    "default": "auto"
-  },
-  "review_provider_id": {
-    "type": "string",
-    "description": "节能监督模型 Provider ID",
-    "_special": "select_provider",
-    "hint": "节能档/自动档普通复核使用。留空使用分析模型。建议使用便宜快速模型。",
-    "default": ""
-  },
-  "review_quality_provider_id": {
-    "type": "string",
-    "description": "质量监督模型 Provider ID",
-    "_special": "select_provider",
-    "hint": "质量档或自动升级质量档时使用。留空时优先使用节能监督模型，再留空使用分析模型。",
-    "default": ""
+    "default": "quality"
   },
   "review_prompt": {
     "type": "text",
