@@ -102,6 +102,80 @@
     "hint": "开启后且“是否启动总结模型”也开启时，本次检查会生成两份报告：一份是总分析模型分析前的程序合并报告，一份是总分析模型分析后的最终报告。保存、/wtup_check 强制当前群发送、群推送和分析文件发送都会发送双份。",
     "default": false
   },
+  "enable_review_model": {
+    "type": "bool",
+    "description": "启用监督模型复核",
+    "hint": "默认关闭。开启后在最终报告生成前增加一次监督模型复核；程序仍会先做 source_ids 硬覆盖检查，监督模型主要负责质检。",
+    "default": false
+  },
+  "review_mode": {
+    "type": "string",
+    "description": "监督模型预设",
+    "hint": "off=关闭；energy=节能档，只查漏编号、格式、模糊表述和必要影响说明；quality=质量档，会更细地检查解释、分类和参数含义；auto=自动档，平时节能，发现大量漏项或补充失败时升级质量档。推荐 auto。",
+    "options": [
+      "off",
+      "energy",
+      "quality",
+      "auto"
+    ],
+    "default": "auto"
+  },
+  "review_provider_id": {
+    "type": "string",
+    "description": "节能监督模型 Provider ID",
+    "_special": "select_provider",
+    "hint": "节能档/自动档普通复核使用。留空使用分析模型。建议使用便宜快速模型。",
+    "default": ""
+  },
+  "review_quality_provider_id": {
+    "type": "string",
+    "description": "质量监督模型 Provider ID",
+    "_special": "select_provider",
+    "hint": "质量档或自动升级质量档时使用。留空时优先使用节能监督模型，再留空使用分析模型。",
+    "default": ""
+  },
+  "review_prompt": {
+    "type": "text",
+    "description": "监督模型提示词",
+    "hint": "用于约束监督模型如何复核报告。节能档建议只查覆盖和格式；质量档再检查解释质量。",
+    "default": "你是 War Thunder Datamine 更新报告的监督/质检模型。请基于程序提供的点名册覆盖状态和结构化报告做复核，不要重新创作整篇报告。节能档只检查是否漏编号、JSON 结构、source_ids 保留、是否存在“部分载具/若干装备”等模糊表述、每条是否有必要的影响说明；质量档还需要检查分类是否合理、参数说明是否清楚、条目是否和对应变更说明匹配。"
+  },
+  "review_rounds": {
+    "type": "int",
+    "description": "监督模型最大轮数",
+    "hint": "默认 1。质量档可设置为 2 让监督模型修正后再复查；节能档通常 1 即可。",
+    "default": 1
+  },
+  "review_energy_batch_size": {
+    "type": "int",
+    "description": "节能档复核条目数",
+    "hint": "节能档最多抽取/携带多少条结构化报告条目给监督模型。默认 80，值越大 token 越多。",
+    "default": 80
+  },
+  "review_quality_batch_size": {
+    "type": "int",
+    "description": "质量档复核条目数",
+    "hint": "质量档最多携带多少条结构化报告条目给监督模型。默认 25，值越大越细但 token 越多。",
+    "default": 25
+  },
+  "review_upgrade_missing_id_threshold": {
+    "type": "int",
+    "description": "自动升级质量档漏项阈值",
+    "hint": "自动档下，程序补入的未覆盖编号数量超过该值时升级质量档。默认 10。",
+    "default": 10
+  },
+  "review_upgrade_on_missing_ids": {
+    "type": "bool",
+    "description": "漏项时自动升级质量档",
+    "hint": "默认开启。自动档下发现未覆盖编号超过阈值时，使用质量监督模型复核。",
+    "default": true
+  },
+  "review_upgrade_on_context_failure": {
+    "type": "bool",
+    "description": "补充失败时自动升级质量档",
+    "hint": "默认开启。自动档下检测到动态补充失败、无法读取、需复核未覆盖变更等风险时，使用质量监督模型复核。",
+    "default": true
+  },
   "enable_push_append_text": {
     "type": "bool",
     "description": "推送时是否启动追加文字内容推送",
@@ -148,7 +222,10 @@
     "type": "string",
     "description": "token 输入单位",
     "hint": "K 表示千 token，M 表示百万 token。",
-    "options": ["K", "M"],
+    "options": [
+      "K",
+      "M"
+    ],
     "default": "M"
   },
   "max_retry_count": {
@@ -234,5 +311,11 @@
     "description": "插件文件最大保存数量",
     "hint": "logs 目录按任务结果目录保留数量，images、errors、task_logs 目录按文件保留数量。默认 5，超过后删除旧项目并保留最新项目；设置为 0 表示不限制。GitHub 缓存目录 github_cache 和模型分析缓存目录 analysis_cache 不受此项限制。",
     "default": 5
+  },
+  "restore_default_prompts": {
+    "type": "bool",
+    "description": "恢复内置提示词",
+    "hint": "默认关闭。开启后插件下次加载时会把分析提示词、总结提示词、工具调用提示词、监督提示词恢复为内置默认值，然后自动改回关闭。",
+    "default": false
   }
 }
