@@ -43,6 +43,16 @@ DEFAULT_TOOL_CALL_PROMPT = (
     "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch、read_changed_file、search_changed_files、list_related_files。"
     "不要请求无关路径，不要为了普通概括请求工具。"
 )
+DEFAULT_REVIEW_PROMPT = (
+    "你是 War Thunder Datamine 更新报告的监督/质检模型。请基于程序提供的点名册覆盖状态和结构化报告做复核，"
+    "不要重新创作整篇报告。节能档只检查是否漏编号、JSON 结构、source_ids 保留、是否存在“部分载具/若干装备”等模糊表述、"
+    "每条是否有必要的影响说明；质量档还需要检查分类是否合理、参数说明是否清楚、条目是否和对应变更说明匹配。"
+)
+REVIEW_MODE_OFF = "off"
+REVIEW_MODE_ENERGY = "energy"
+REVIEW_MODE_QUALITY = "quality"
+REVIEW_MODE_AUTO = "auto"
+REVIEW_MODES = {REVIEW_MODE_OFF, REVIEW_MODE_ENERGY, REVIEW_MODE_QUALITY, REVIEW_MODE_AUTO}
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,18 @@ class PluginConfig:
     max_retry_count: int
     enable_push_append_text: bool
     push_append_text_template: str
+    restore_default_prompts: bool = False
+    enable_review_model: bool = False
+    review_mode: str = REVIEW_MODE_AUTO
+    review_provider_id: str = ""
+    review_quality_provider_id: str = ""
+    review_prompt: str = DEFAULT_REVIEW_PROMPT
+    review_rounds: int = 1
+    review_energy_batch_size: int = 80
+    review_quality_batch_size: int = 25
+    review_upgrade_missing_id_threshold: int = 10
+    review_upgrade_on_missing_ids: bool = True
+    review_upgrade_on_context_failure: bool = True
     enable_model_tool_calls: bool = False
     max_tool_call_rounds: int = 2
     max_tool_calls_per_round: int = 5
@@ -123,6 +145,14 @@ class PluginConfig:
     @property
     def analysis_provider_ids(self) -> list[str]:
         return unique_provider_ids([self.provider_id, *self.backup_provider_ids])
+
+    @property
+    def effective_review_provider_id(self) -> str:
+        return self.review_provider_id or self.provider_id
+
+    @property
+    def effective_review_quality_provider_id(self) -> str:
+        return self.review_quality_provider_id or self.review_provider_id or self.provider_id
 
     def provider_fallback_ids(self, provider_id: str | None = None) -> list[str]:
         primary_provider_id = self.provider_id if provider_id is None else str(provider_id or "").strip()
@@ -185,6 +215,26 @@ def as_bool(value: Any, default: bool = False) -> bool:
 def normalize_token_unit(value: Any) -> str:
     text = str(value or "").strip().upper()
     return "M" if text == "M" else "K"
+
+
+def normalize_review_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "关闭": REVIEW_MODE_OFF,
+        "关": REVIEW_MODE_OFF,
+        "off": REVIEW_MODE_OFF,
+        "节能": REVIEW_MODE_ENERGY,
+        "节能档": REVIEW_MODE_ENERGY,
+        "energy": REVIEW_MODE_ENERGY,
+        "质量": REVIEW_MODE_QUALITY,
+        "质量档": REVIEW_MODE_QUALITY,
+        "quality": REVIEW_MODE_QUALITY,
+        "自动": REVIEW_MODE_AUTO,
+        "自动档": REVIEW_MODE_AUTO,
+        "auto": REVIEW_MODE_AUTO,
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in REVIEW_MODES else REVIEW_MODE_AUTO
 
 
 def split_lines(value: Any) -> list[str]:
@@ -274,6 +324,25 @@ def load_config(config: Any) -> PluginConfig:
         push_append_text_template=str(
             config_get(config, "push_append_text_template", DEFAULT_PUSH_APPEND_TEXT_TEMPLATE)
             or DEFAULT_PUSH_APPEND_TEXT_TEMPLATE
+        ),
+        restore_default_prompts=as_bool(config_get(config, "restore_default_prompts", False)),
+        enable_review_model=as_bool(config_get(config, "enable_review_model", False)),
+        review_mode=normalize_review_mode(config_get(config, "review_mode", REVIEW_MODE_AUTO)),
+        review_provider_id=str(config_get(config, "review_provider_id", "") or "").strip(),
+        review_quality_provider_id=str(config_get(config, "review_quality_provider_id", "") or "").strip(),
+        review_prompt=str(config_get(config, "review_prompt", DEFAULT_REVIEW_PROMPT) or DEFAULT_REVIEW_PROMPT),
+        review_rounds=as_int(config_get(config, "review_rounds", 1), 1, minimum=0),
+        review_energy_batch_size=as_int(config_get(config, "review_energy_batch_size", 80), 80, minimum=1),
+        review_quality_batch_size=as_int(config_get(config, "review_quality_batch_size", 25), 25, minimum=1),
+        review_upgrade_missing_id_threshold=as_int(
+            config_get(config, "review_upgrade_missing_id_threshold", 10),
+            10,
+            minimum=0,
+        ),
+        review_upgrade_on_missing_ids=as_bool(config_get(config, "review_upgrade_on_missing_ids", True), True),
+        review_upgrade_on_context_failure=as_bool(
+            config_get(config, "review_upgrade_on_context_failure", True),
+            True,
         ),
         backup_provider_ids=unique_provider_ids(
             [

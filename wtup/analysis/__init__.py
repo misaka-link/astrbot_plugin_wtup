@@ -49,6 +49,7 @@ from .prompts import (
 from .repair import parse_or_repair_analysis
 from .responses import ensure_usable_llm_response, extract_response_text, llm_failure_reason
 from .responses import extract_token_usage
+from .review import ReviewResult, review_analysis_with_usage
 from .retry import (
     analyze_chunk,
     analyze_chunk_once,
@@ -127,11 +128,13 @@ __all__ = [
     "parse_analysis_json",
     "parse_or_repair_analysis",
     "record_model_error",
+    "ReviewResult",
     "refine_chunk_analyses",
     "refine_chunk_analyses_with_usage",
     "refine_merged_analysis",
     "refine_merged_analysis_with_usage",
     "request_llm",
+    "review_analysis_with_usage",
     "render_change_manifest",
     "safe_normalize_analysis",
     "split_chunk_for_retry",

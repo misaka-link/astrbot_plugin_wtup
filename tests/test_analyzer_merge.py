@@ -32,6 +32,7 @@ from wtup.analyzer import (
 from wtup.config import PluginConfig, load_config
 from wtup.diff_collector import DiffChunk, DiffSummary, build_diff_summary, split_files
 from wtup.renderer import report_update_subtitle
+from wtup.analysis import review_analysis_with_usage
 
 
 def make_summary() -> DiffSummary:
@@ -485,6 +486,78 @@ class ConfigTest(unittest.TestCase):
         settings = load_config({"max_dynamic_context_chars": 0})
 
         self.assertEqual(settings.max_dynamic_context_chars, 0)
+
+    def test_review_config_defaults_and_modes(self) -> None:
+        settings = load_config({})
+
+        self.assertFalse(settings.enable_review_model)
+        self.assertEqual(settings.review_mode, "auto")
+        self.assertEqual(settings.effective_review_provider_id, "")
+        self.assertEqual(settings.effective_review_quality_provider_id, "")
+        self.assertIn("质检模型", settings.review_prompt)
+
+        energy_settings = load_config({"review_mode": "节能"})
+        quality_settings = load_config({"review_mode": "quality"})
+
+        self.assertEqual(energy_settings.review_mode, "energy")
+        self.assertEqual(quality_settings.review_mode, "quality")
+
+    def test_review_provider_defaults_to_analysis_model(self) -> None:
+        settings = load_config({"provider_id": "analysis-provider", "review_provider_id": "review-provider"})
+
+        self.assertEqual(settings.effective_review_provider_id, "review-provider")
+        self.assertEqual(settings.effective_review_quality_provider_id, "review-provider")
+
+
+class ReviewModelTest(unittest.IsolatedAsyncioTestCase):
+    async def test_energy_review_records_issues_without_revision(self) -> None:
+        summary = make_summary()
+        payload = with_source_ids(analysis("参数调整", "部分载具参数变化"), "C001-001")
+        context = FakeContext(json_response({"passed": False, "issues": ["存在模糊表述"], "severity": "中"}))
+        settings = load_config(
+            {
+                "enable_review_model": True,
+                "review_mode": "energy",
+                "review_provider_id": "review-provider",
+            }
+        )
+
+        result = await review_analysis_with_usage(context, settings, summary, payload)
+
+        self.assertEqual(result.mode_used, "energy")
+        self.assertIn("存在模糊表述", result.issues)
+        self.assertFalse(result.applied_revision)
+        self.assertIn("review", result.analysis)
+        self.assertEqual(context.kwargs[0]["chat_provider_id"], "review-provider")
+
+    async def test_quality_review_applies_revision_when_source_ids_are_kept(self) -> None:
+        summary = make_summary()
+        payload = with_source_ids(analysis("参数调整", "部分载具参数变化"), "C001-001")
+        revised = with_source_ids(analysis("参数调整", "M1 Abrams(M1 艾布拉姆斯) 参数变化，对游戏表现影响待复核。"), "C001-001")
+        context = FakeContext(
+            json_response(
+                {
+                    "passed": False,
+                    "issues": ["修正模糊表述"],
+                    "severity": "中",
+                    "revised_analysis": revised,
+                }
+            )
+        )
+        settings = load_config(
+            {
+                "enable_review_model": True,
+                "review_mode": "quality",
+                "review_quality_provider_id": "quality-review-provider",
+            }
+        )
+
+        result = await review_analysis_with_usage(context, settings, summary, payload)
+
+        self.assertEqual(result.mode_used, "quality")
+        self.assertTrue(result.applied_revision)
+        self.assertIn("M1 Abrams", result.analysis["update_sections"][0]["items"][0]["text"])
+        self.assertEqual(context.kwargs[0]["chat_provider_id"], "quality-review-provider")
 
 
 class FakeContext:

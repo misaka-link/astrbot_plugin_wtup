@@ -21,6 +21,7 @@ from .analyzer import (
     merge_chunk_analyses,
     refine_chunk_analyses_with_usage,
     refine_merged_analysis_with_usage,
+    review_analysis_with_usage,
     split_chunks_by_token_limit,
     sum_token_usage,
 )
@@ -414,6 +415,35 @@ class UpdateCheckService:
                         summary_model_route = self.runtime.current_model_provider_route("summary")
                     else:
                         analysis = fallback_analysis("程序合并分片分析结果失败，需要结合 GitHub 原始 diff 复核。")
+                if self.settings.enable_review_model:
+                    logger.warning("[%s] 已启动监督模型，正在复核最终报告...", PLUGIN_NAME)
+                    self.runtime.record_task_log(
+                        "监督模型开始",
+                        {
+                            "模式": self.settings.review_mode,
+                            "节能模型": self.settings.effective_review_provider_id or "默认模型",
+                            "质量模型": self.settings.effective_review_quality_provider_id or "默认模型",
+                        },
+                    )
+                    review_result = await review_analysis_with_usage(
+                        self.context,
+                        self.settings,
+                        summary,
+                        analysis,
+                    )
+                    check_task_termination(self.settings, "监督模型复核后")
+                    analysis = review_result.analysis
+                    token_usage += review_result.token_usage
+                    self.runtime.record_task_log(
+                        "监督模型完成",
+                        {
+                            "实际模式": review_result.mode_used,
+                            "发现问题数": len(review_result.issues),
+                            "发现问题": review_result.issues,
+                            "采用修正版": "是" if review_result.applied_revision else "否",
+                            "真实总token": review_result.token_usage.total_tokens,
+                        },
+                    )
             if analysis_needs_review(analysis) and not analysis_failure_reasons:
                 analysis_failure_reasons.append(str(analysis.get("summary") or "模型分析结果需要复核").strip())
             analysis_failed = bool(analysis_failure_reasons)

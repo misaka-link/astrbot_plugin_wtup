@@ -155,6 +155,38 @@ class ClearCacheFilesStartupTest(unittest.TestCase):
             self.assertTrue(config.saved)
             self.assertFalse(plugin.settings.clear_cache_files)
 
+    def test_startup_restore_default_prompts_overwrites_prompts_and_disables_switch(self) -> None:
+        main = import_main_with_astrbot_stubs()
+
+        class SavableConfig(dict):
+            saved = False
+
+            def save_config(self):
+                self.saved = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            config = SavableConfig(
+                {
+                    "restore_default_prompts": "开启",
+                    "analysis_prompt": "坏掉的分析提示词",
+                    "summary_prompt": "坏掉的总结提示词",
+                    "tool_call_prompt": "坏掉的工具提示词",
+                    "review_prompt": "坏掉的监督提示词",
+                }
+            )
+
+            with patch.object(main.StarTools, "get_data_dir", return_value=str(data_dir)):
+                plugin = main.WTUpdatePlugin(context=object(), config=config)
+
+            self.assertFalse(config["restore_default_prompts"])
+            self.assertTrue(config.saved)
+            self.assertNotEqual(config["analysis_prompt"], "坏掉的分析提示词")
+            self.assertNotEqual(config["summary_prompt"], "坏掉的总结提示词")
+            self.assertNotEqual(config["tool_call_prompt"], "坏掉的工具提示词")
+            self.assertNotEqual(config["review_prompt"], "坏掉的监督提示词")
+            self.assertFalse(plugin.settings.restore_default_prompts)
+
 
 def import_main_with_astrbot_stubs():
     if "main" in sys.modules:

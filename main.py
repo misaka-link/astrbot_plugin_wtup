@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import time
@@ -13,7 +14,18 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
 try:
-    from .wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
+    from .wtup.config import (
+        BRANCH_NAME,
+        DEFAULT_ANALYSIS_PROMPT,
+        DEFAULT_REVIEW_PROMPT,
+        DEFAULT_SUMMARY_PROMPT,
+        DEFAULT_TOOL_CALL_PROMPT,
+        PLUGIN_NAME,
+        PLUGIN_VERSION,
+        REPO_FULL_NAME,
+        PluginConfig,
+        load_config,
+    )
     from .wtup.diff_collector import short_sha
     from .wtup.permissions import admin_target_allows_sender, normalize_user_id
     from .wtup.runtime import RuntimeState
@@ -21,7 +33,18 @@ try:
     from .wtup.state_store import StateStore
     from .wtup.termination import TaskTerminatedError, reset_task_termination
 except ImportError:
-    from wtup.config import BRANCH_NAME, PLUGIN_NAME, PLUGIN_VERSION, REPO_FULL_NAME, PluginConfig, load_config
+    from wtup.config import (
+        BRANCH_NAME,
+        DEFAULT_ANALYSIS_PROMPT,
+        DEFAULT_REVIEW_PROMPT,
+        DEFAULT_SUMMARY_PROMPT,
+        DEFAULT_TOOL_CALL_PROMPT,
+        PLUGIN_NAME,
+        PLUGIN_VERSION,
+        REPO_FULL_NAME,
+        PluginConfig,
+        load_config,
+    )
     from wtup.diff_collector import short_sha
     from wtup.permissions import admin_target_allows_sender, normalize_user_id
     from wtup.runtime import RuntimeState
@@ -34,6 +57,7 @@ COMMAND_RECEIVED_EMOJI_ID = "289"
 COMMAND_DONE_EMOJI_ID = "124"
 CLEAR_CACHE_FILES_CONFIG_KEY = "clear_cache_files"
 TERMINATE_RUNNING_TASK_CONFIG_KEY = "terminate_running_task"
+RESTORE_DEFAULT_PROMPTS_CONFIG_KEY = "restore_default_prompts"
 
 
 def _get_event_message_id(event: AstrMessageEvent) -> str:
@@ -172,6 +196,31 @@ def _save_config(config: Any) -> bool:
     return False
 
 
+def _schema_prompt_defaults() -> dict[str, str]:
+    fallback = {
+        "analysis_prompt": DEFAULT_ANALYSIS_PROMPT,
+        "summary_prompt": DEFAULT_SUMMARY_PROMPT,
+        "tool_call_prompt": DEFAULT_TOOL_CALL_PROMPT,
+        "review_prompt": DEFAULT_REVIEW_PROMPT,
+    }
+    schema_path = Path(__file__).resolve().parent / "_conf_schema.json"
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("[%s] 读取后台默认提示词失败，使用代码内置兜底: %s", PLUGIN_NAME, exc)
+        return fallback
+    if not isinstance(payload, dict):
+        return fallback
+    result = dict(fallback)
+    for key in result:
+        field = payload.get(key)
+        if isinstance(field, dict):
+            default = str(field.get("default") or "").strip()
+            if default:
+                result[key] = default
+    return result
+
+
 def _clear_directory_contents(directory: Path) -> tuple[int, int]:
     if not directory.exists():
         return 0, 0
@@ -238,6 +287,7 @@ class WTUpdatePlugin(Star):
         self.config = config if config is not None else {}
         self.settings: PluginConfig = load_config(self.config)
         self.data_dir = self._resolve_data_dir()
+        self._restore_default_prompts_on_startup()
         self._clear_cache_files_on_startup()
         self.state_store = StateStore(self.data_dir / "state.json")
         self.image_dir = self.data_dir / "images"
@@ -292,6 +342,25 @@ class WTUpdatePlugin(Star):
             removed_count,
             failed_count,
         )
+
+    def _restore_default_prompts_on_startup(self) -> None:
+        if not self.settings.restore_default_prompts:
+            return
+
+        changed = False
+        prompt_defaults = _schema_prompt_defaults()
+        for key, value in (
+            ("analysis_prompt", prompt_defaults["analysis_prompt"]),
+            ("summary_prompt", prompt_defaults["summary_prompt"]),
+            ("tool_call_prompt", prompt_defaults["tool_call_prompt"]),
+            ("review_prompt", prompt_defaults["review_prompt"]),
+            (RESTORE_DEFAULT_PROMPTS_CONFIG_KEY, False),
+        ):
+            changed = _set_config_value(self.config, key, value) or changed
+        if changed:
+            _save_config(self.config)
+        self.settings = load_config(self.config)
+        logger.warning("[%s] 已恢复内置提示词，并自动关闭后台恢复开关", PLUGIN_NAME)
 
     async def initialize(self):
         self._task = asyncio.create_task(self._monitor_loop())

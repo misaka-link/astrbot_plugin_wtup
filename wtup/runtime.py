@@ -62,6 +62,7 @@ class RuntimeState:
         self._model_provider_routes: dict[str, list[str]] = {
             "analysis": [],
             "summary": [],
+            "review": [],
             "all": [],
         }
 
@@ -107,6 +108,7 @@ class RuntimeState:
         self._model_provider_routes = {
             "analysis": [],
             "summary": [],
+            "review": [],
             "all": [],
         }
         header = [
@@ -186,7 +188,12 @@ class RuntimeState:
     def _record_model_provider_route(self, payload: dict[str, Any]) -> None:
         provider = str(payload.get("Provider") or "").strip() or "默认模型"
         purpose = str(payload.get("用途") or "").strip()
-        category = "summary" if "总结" in purpose else "analysis"
+        if "监督" in purpose or "复核" in purpose:
+            category = "review"
+        elif "总结" in purpose:
+            category = "summary"
+        else:
+            category = "analysis"
         self._append_model_route("all", provider)
         self._append_model_route(category, provider)
 

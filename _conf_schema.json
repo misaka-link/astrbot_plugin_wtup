@@ -96,12 +96,6 @@
     "hint": "开启后，当 diff 被拆成多次模型请求时，会先合并各分片分析结果，再调用总结模型整理最终报告。关闭时使用程序内置规则直接合并。不影响 JSON 修复和失败拆分重试。",
     "default": false
   },
-  "enable_pre_summary_report": {
-    "type": "bool",
-    "description": "是否生成分析前报告",
-    "hint": "开启后且“是否启动总结模型”也开启时，本次检查会生成两份报告：一份是总分析模型分析前的程序合并报告，一份是总分析模型分析后的最终报告。保存、/wtup_check 强制当前群发送、群推送和分析文件发送都会发送双份。",
-    "default": false
-  },
   "enable_review_model": {
     "type": "bool",
     "description": "启用监督模型复核",
@@ -175,6 +169,12 @@
     "description": "补充失败时自动升级质量档",
     "hint": "默认开启。自动档下检测到动态补充失败、无法读取、需复核未覆盖变更等风险时，使用质量监督模型复核。",
     "default": true
+  },
+  "enable_pre_summary_report": {
+    "type": "bool",
+    "description": "是否生成分析前报告",
+    "hint": "开启后且“是否启动总结模型”也开启时，本次检查会生成两份报告：一份是总分析模型分析前的程序合并报告，一份是总分析模型分析后的最终报告。保存、/wtup_check 强制当前群发送、群推送和分析文件发送都会发送双份。",
+    "default": false
   },
   "enable_push_append_text": {
     "type": "bool",

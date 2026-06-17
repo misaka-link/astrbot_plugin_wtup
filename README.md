@@ -66,6 +66,17 @@ mode: commit
 - `summary_prompt`：总结提示词，用于总结模型整理全部分片分析结果，默认同样要求不遗漏分片中的任何改动。
 - `enable_summary_model`：是否启动总结模型，默认关闭。兼容旧配置项 `enable_second_pass_analysis`。
 - `enable_pre_summary_report`：是否生成分析前报告，默认关闭。开启后且总结模型也开启时，会生成总分析模型分析前和分析后的两份报告。
+- `enable_review_model`：是否启用监督模型复核，默认关闭。开启后在最终报告生成前会多一次监督复核，程序仍先做覆盖检查。
+- `review_mode`：监督模型预设，`off` 为关闭，`energy` 为节能档，`quality` 为质量档，`auto` 为自动档。节能档只查漏编号、格式和模糊表述；质量档还会更细地检查分类、参数说明和影响描述。推荐自动档。
+- `review_provider_id`：节能监督模型 Provider ID，留空使用分析模型。推荐选择便宜、快、稳定的模型。
+- `review_quality_provider_id`：质量监督模型 Provider ID，留空时优先使用节能监督模型，再留空使用分析模型。
+- `review_prompt`：监督模型提示词，默认要求监督模型只做质检，不重新创作整篇报告。
+- `review_rounds`：监督模型最大轮数，默认 1。质量档可适当提高，节能档一般 1 轮够用。
+- `review_energy_batch_size`：节能档复核条目数，默认 80。只查漏和格式时可以让监督模型看更多条目。
+- `review_quality_batch_size`：质量档复核条目数，默认 25。质量档更细但更耗 token。
+- `review_upgrade_missing_id_threshold`：自动档升级到质量档的漏项阈值，默认 10。
+- `review_upgrade_on_missing_ids`：自动档在漏项较多时自动升级质量档，默认开启。
+- `review_upgrade_on_context_failure`：自动档在动态补充失败或需复核风险较高时自动升级质量档，默认开启。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`、`{analysis_model_chain}`、`{summary_model_chain}`、`{analysis_model_chain_name}`、`{summary_model_chain_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`；如果中途切换备用模型，模型变量会按实际请求链路输出，例如 `glm-5.1 -> gemini-3.5-flash`，`*_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
@@ -88,6 +99,7 @@ mode: commit
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
 - `terminate_running_task`：终止当前正在运行的任务，默认关闭。开启后当前检查会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中尽快停止，且不会把本次 commit 标记为完成；终止后会自动改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
+- `restore_default_prompts`：恢复内置提示词，默认关闭。开启后插件下次加载时会把 `analysis_prompt`、`summary_prompt`、`tool_call_prompt` 和 `review_prompt` 恢复为内置默认值，然后自动改回关闭。
 
 `github_token` 获取位置：
 
@@ -180,6 +192,8 @@ GitHub 请求失败会按 `github_max_retry_count` 重试，默认最多重试 4
 开启后，如果本次 diff 被拆成多次模型请求，插件会先按程序规则初步合并各分片结果，再额外请求一次总结模型整理最终报告。总结模型只基于已有分片分析结果，不重新读取原始 diff；它会尽量去重、合并相近条目并整理最终报告。该功能会增加一次模型调用和等待时间；如果总结模型失败或输出不是有效 JSON，插件会自动回退到程序初步合并结果继续推送。
 
 `enable_pre_summary_report` 默认关闭。开启后且 `enable_summary_model` 也开启时，插件会保留总结模型处理前的程序合并报告，并在总结模型处理后再生成最终报告。两份报告都会渲染图片、保存日志；`/wtup_check 强制` 会依次把两份报告和两份日志文件发送到当前群；如果配置了群推送，会依次发送两张报告图；如果配置了 `analysis_file_groups`，也会上传两份 `.log` 文件。两份报告的图片和文本里会标注“总分析模型分析前 / 总分析模型分析后”，日志文件名会追加 `_总分析前` 和 `_总分析后`，避免同一版本范围互相覆盖。
+
+`enable_review_model` 默认关闭。开启后，最终报告生成前会再过一层监督复核。监督模型分三种预设：`energy` 只做“点名查作业”，主要检查有没有漏编号、JSON 结构、模糊表述和必要影响说明；`quality` 会更细地检查条目解释、分类和参数含义；`auto` 推荐默认使用，平时走节能档，发现漏项较多或动态补充失败时自动升级到质量档。
 
 如果开启了总结模型，但程序初步合并分片结果时发生异常，插件不会直接中断。本次检查会把各分片的分析 JSON、分片错误信息和原始模型输出文本交给总结模型生成最终报告；如果这一步仍然失败，才会生成需复核的兜底报告。
 
