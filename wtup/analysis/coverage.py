@@ -16,6 +16,14 @@ class ChangeEntry:
     description: str
 
 
+@dataclass
+class CompactedChangeGroup:
+    file_path: str
+    status: str
+    summary: str
+    source_ids: list[str]
+
+
 def build_change_manifest(summary: DiffSummary, chunk: DiffChunk) -> list[ChangeEntry]:
     entries_by_path = _summary_entries_by_path(summary)
     entries: list[ChangeEntry] = []
@@ -69,19 +77,13 @@ def enforce_change_coverage(
         return _normalize_analysis_title(summary, normalize_analysis(updated))
 
     sections = list(normalized.get("update_sections") or [])
-    for index, batch in enumerate(_batches(missing, 500), start=1):
+    compacted_items = _compact_missing_items(missing)
+    for index, batch in enumerate(_batches(compacted_items, 500), start=1):
         title = "需复核的未覆盖变更" if index == 1 else f"需复核的未覆盖变更 {index}"
         sections.append(
             {
                 "title": title,
-                "items": [
-                    {
-                        "text": f"{entry.file_path}: {entry.description}",
-                        "children": [],
-                        "source_ids": [entry.source_id],
-                    }
-                    for entry in batch
-                ],
+                "items": batch,
             }
         )
 
@@ -116,6 +118,98 @@ def collect_source_ids(analysis: dict[str, Any]) -> set[str]:
             continue
         result.update(_collect_item_source_ids(section.get("items")))
     return result
+
+
+def _compact_missing_items(entries: list[ChangeEntry]) -> list[dict[str, Any]]:
+    groups: list[CompactedChangeGroup] = []
+    index_by_key: dict[tuple[str, str, str], int] = {}
+
+    for entry in entries:
+        summary = _compact_description(entry.description)
+        key = (entry.file_path, entry.status, summary)
+        group_index = index_by_key.get(key)
+        if group_index is None:
+            index_by_key[key] = len(groups)
+            groups.append(
+                CompactedChangeGroup(
+                    file_path=entry.file_path,
+                    status=entry.status,
+                    summary=summary,
+                    source_ids=[entry.source_id],
+                )
+            )
+            continue
+
+        group = groups[group_index]
+        if entry.source_id not in group.source_ids:
+            group.source_ids.append(entry.source_id)
+
+    return [_compact_group_item(group) for group in groups]
+
+
+def _compact_group_item(group: CompactedChangeGroup) -> dict[str, Any]:
+    count = len(group.source_ids)
+    summary = _ensure_sentence(group.summary)
+    if count > 1:
+        text = f"{group.file_path}: {count} 处同类未覆盖变更，{summary}"
+    else:
+        text = f"{group.file_path}: {summary}"
+    return {
+        "text": text,
+        "children": [],
+        "source_ids": group.source_ids,
+    }
+
+
+def _compact_description(description: str) -> str:
+    removed = _description_part(description, "删除/旧值")
+    added = _description_part(description, "新增/新值")
+    if removed and added:
+        return f"{removed} -> {added}，需复核具体影响"
+    if added:
+        return f"新增 {added}，需复核具体影响"
+    if removed:
+        return f"删除 {removed}，需复核具体影响"
+
+    cleaned = _strip_hunk_metadata(description)
+    if cleaned:
+        return cleaned
+    return "原始 diff 变更未被模型主动解释，需复核具体影响"
+
+
+def _description_part(description: str, label: str) -> str:
+    prefix = f"{label}:"
+    for part in str(description or "").split("；"):
+        text = part.strip()
+        if text.startswith(prefix):
+            return _clean_compact_value(_strip_hunk_metadata(text[len(prefix) :].strip()))
+    return ""
+
+
+def _clean_compact_value(value: str) -> str:
+    parts = []
+    for part in str(value or "").split(" | "):
+        text = part.strip().rstrip(",，;； ")
+        if text:
+            parts.append(text)
+    return " | ".join(parts)
+
+
+def _strip_hunk_metadata(value: str) -> str:
+    parts = []
+    for part in str(value or "").split("；"):
+        text = part.strip()
+        if not text or text.startswith("@@"):
+            continue
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            parts.append(text)
+    return "；".join(parts)[:500]
+
+
+def _ensure_sentence(value: str) -> str:
+    text = str(value or "").strip().rstrip("。；;，, ")
+    return f"{text}。"
 
 
 def _normalize_analysis_title(summary: DiffSummary, analysis: dict[str, Any]) -> dict[str, Any]:
@@ -253,5 +347,5 @@ def _fallback_file_index(summary: DiffSummary, file_info: dict[str, Any]) -> int
     return 999
 
 
-def _batches(values: list[ChangeEntry], size: int) -> list[list[ChangeEntry]]:
+def _batches(values: list[Any], size: int) -> list[list[Any]]:
     return [values[index : index + size] for index in range(0, len(values), size)]

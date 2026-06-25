@@ -29,7 +29,7 @@ try:
     from .wtup.diff_collector import short_sha
     from .wtup.permissions import admin_target_allows_sender, normalize_user_id
     from .wtup.runtime import RuntimeState
-    from .wtup.service import UpdateCheckService
+    from .wtup.service import MAX_FORCE_COMMIT_COUNT, UpdateCheckService
     from .wtup.state_store import StateStore
     from .wtup.termination import TaskTerminatedError, reset_task_termination
 except ImportError:
@@ -48,7 +48,7 @@ except ImportError:
     from wtup.diff_collector import short_sha
     from wtup.permissions import admin_target_allows_sender, normalize_user_id
     from wtup.runtime import RuntimeState
-    from wtup.service import UpdateCheckService
+    from wtup.service import MAX_FORCE_COMMIT_COUNT, UpdateCheckService
     from wtup.state_store import StateStore
     from wtup.termination import TaskTerminatedError, reset_task_termination
 
@@ -148,6 +148,34 @@ def _event_is_configured_admin(event: AstrMessageEvent, admin_targets: list[str]
         sender_id=_get_event_user_id(event),
         event_origin=getattr(event, "unified_msg_origin", ""),
     )
+
+
+def _parse_force_commit_count(message: str, *, force_latest: bool) -> tuple[int, str]:
+    if not force_latest:
+        return 1, ""
+
+    tokens = [token for token in re.split(r"\s+", str(message or "").strip()) if token]
+    args = [token for token in tokens if token not in {"/wtup_check", "wtup_check"}]
+    count_tokens = [token for token in args if re.fullmatch(r"[+-]?\d+", token)]
+    unknown_args = [
+        token
+        for token in args
+        if token not in {"强制", "强制全部"}
+        and token.lower() not in {"force", "all"}
+        and not re.fullmatch(r"[+-]?\d+", token)
+    ]
+    usage = f"用法：/wtup_check 强制 [1-{MAX_FORCE_COMMIT_COUNT}] 或 /wtup_check 强制全部 [1-{MAX_FORCE_COMMIT_COUNT}]"
+    if unknown_args:
+        return 1, f"参数不支持：{' '.join(unknown_args)}。\n{usage}"
+    if not count_tokens:
+        return 1, ""
+    if len(count_tokens) > 1:
+        return 1, f"提交数量参数只能填写一个。\n{usage}"
+
+    count = int(count_tokens[0])
+    if count < 1 or count > MAX_FORCE_COMMIT_COUNT:
+        return 1, f"提交数量必须在 1 到 {MAX_FORCE_COMMIT_COUNT} 之间。\n{usage}"
+    return count, ""
 
 
 def _set_config_value(config: Any, key: str, value: Any) -> bool:
@@ -425,6 +453,10 @@ class WTUpdatePlugin(Star):
         args_lower = args.lower()
         force_all = "强制全部" in args or ("force" in args_lower and "all" in args_lower)
         force_latest = force_all or "强制" in args or "force" in args_lower
+        force_commit_count, force_count_error = _parse_force_commit_count(args, force_latest=force_latest)
+        if force_count_error:
+            yield event.plain_result(force_count_error)
+            return
         force_current_group = force_latest and not force_all
         if force_latest and not _event_is_configured_admin(event, self.settings.admin_targets):
             yield event.plain_result("权限不足：/wtup_check 强制 和 /wtup_check 强制全部 只能由插件后台“管理员列表”中的用户执行。")
@@ -448,6 +480,7 @@ class WTUpdatePlugin(Star):
                 event=event,
                 target_groups=target_groups,
                 analysis_file_groups=analysis_file_groups,
+                force_commit_count=force_commit_count,
             )
         except Exception as exc:
             logger.warning("[%s] 手动检查失败: %s", PLUGIN_NAME, exc, exc_info=True)
@@ -542,6 +575,7 @@ class WTUpdatePlugin(Star):
         event: AstrMessageEvent | None = None,
         target_groups: list[str] | None = None,
         analysis_file_groups: list[str] | None = None,
+        force_commit_count: int = 1,
     ) -> dict[str, Any]:
         try:
             return await self.service.check_once(
@@ -551,6 +585,7 @@ class WTUpdatePlugin(Star):
                 event=event,
                 target_groups=target_groups,
                 analysis_file_groups=analysis_file_groups,
+                force_commit_count=force_commit_count,
             )
         except TaskTerminatedError as exc:
             runtime = getattr(getattr(self, "service", None), "runtime", None)

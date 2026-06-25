@@ -47,6 +47,7 @@ DEFAULT_REVIEW_PROMPT = (
     "你是 War Thunder Datamine 更新报告的监督/质检模型。请基于程序提供的点名册覆盖状态和结构化报告做复核，"
     "不要重新创作整篇报告。节能档只检查是否漏编号、JSON 结构、source_ids 保留、是否存在“部分载具/若干装备”等模糊表述、"
     "每条是否有必要的影响说明；质量档还需要检查分类是否合理、参数说明是否清楚、条目是否和对应变更说明匹配。"
+    "如需修正文案，质量档只返回按 item_id 定位的 item_revisions，程序会保留原 source_ids 和结构。"
 )
 REVIEW_MODE_OFF = "off"
 REVIEW_MODE_ENERGY = "energy"

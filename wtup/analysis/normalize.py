@@ -10,6 +10,8 @@ from .fallback import fallback_analysis
 AI_ANALYSIS_ITEM_LIMIT = 50
 UPDATE_SECTION_LIMIT = 100
 UPDATE_ITEM_LIMIT = 500
+RAW_DIFF_HUNK_RE = re.compile(r"@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@")
+RAW_DIFF_LABELS = ("删除/旧值", "新增/新值")
 
 
 def safe_normalize_analysis(text: str) -> dict[str, Any]:
@@ -148,6 +150,32 @@ def normalize_update_items(value: Any, *, limit: int = 20, depth: int = 0) -> li
             result.append(normalized_item)
         if len(result) >= limit:
             break
+    return dedupe_normalized_update_items(result)
+
+def dedupe_normalized_update_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    index_by_text: dict[str, int] = {}
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        children = item.get("children") if isinstance(item.get("children"), list) else []
+        source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+        if text in index_by_text:
+            existing = result[index_by_text[text]]
+            existing["children"] = dedupe_normalized_update_items([*existing.get("children", []), *children])
+            merged_ids = unique_texts([*existing.get("source_ids", []), *source_ids])
+            if merged_ids:
+                existing["source_ids"] = merged_ids
+            else:
+                existing.pop("source_ids", None)
+            continue
+        normalized = {"text": text, "children": dedupe_normalized_update_items(children)}
+        merged_ids = unique_texts(source_ids)
+        if merged_ids:
+            normalized["source_ids"] = merged_ids
+        index_by_text[text] = len(result)
+        result.append(normalized)
     return result
 
 def normalize_coverage(value: Any) -> dict[str, Any]:
@@ -257,6 +285,7 @@ def clean_pagination_text(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
+    text = clean_raw_diff_summary_text(text)
     replacements = [
         (r"本批\s*diff", "本次 diff"),
         (r"当前\s*diff\s*分片", "本次 diff"),
@@ -273,6 +302,98 @@ def clean_pagination_text(value: Any) -> str:
         text = re.sub(pattern, replacement, text, flags=re.I)
     text = re.sub(r"本次 diff(?=[\u4e00-\u9fff])", "本次 diff ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+def clean_raw_diff_summary_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or not _looks_like_raw_diff_summary(text):
+        return text
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 1:
+        cleaned_lines = unique_texts(_clean_raw_diff_summary_line(line) for line in lines)
+        return "；".join(cleaned_lines)
+    return _clean_raw_diff_summary_line(text)
+
+def _looks_like_raw_diff_summary(text: str) -> bool:
+    if not any(f"{label}:" in text for label in RAW_DIFF_LABELS):
+        return False
+    return bool(RAW_DIFF_HUNK_RE.search(text) or "；" in text or ";" in text)
+
+def _clean_raw_diff_summary_line(line: str) -> str:
+    raw = re.sub(r"^\s*[-*]\s+", "", str(line or "").strip())
+    removed = _raw_diff_label_value(raw, "删除/旧值")
+    added = _raw_diff_label_value(raw, "新增/新值")
+    path = _raw_diff_path(raw)
+
+    if removed and added:
+        summary = f"{removed} -> {added}"
+    elif added:
+        summary = f"新增 {added}"
+    elif removed:
+        summary = f"删除 {removed}"
+    else:
+        summary = _strip_raw_diff_markers(raw)
+
+    summary = summary.rstrip("。；;，, ")
+    if path and summary:
+        return f"{path}: {summary}，需复核具体影响。"
+    if summary:
+        return f"{summary}，需复核具体影响。"
+    return "原始 diff 变更未被模型主动解释，需复核具体影响。"
+
+def _raw_diff_label_value(text: str, label: str) -> str:
+    prefix = f"{label}:"
+    for part in re.split(r"[；;]\s*", str(text or "")):
+        cleaned = part.strip()
+        if cleaned.startswith(prefix):
+            return _clean_raw_diff_value(cleaned[len(prefix) :])
+    return ""
+
+def _raw_diff_path(text: str) -> str:
+    raw = str(text or "").strip()
+    positions = [
+        index
+        for index in [
+            raw.find("@@"),
+            raw.find("删除/旧值:"),
+            raw.find("新增/新值:"),
+        ]
+        if index >= 0
+    ]
+    if not positions:
+        return ""
+    prefix = raw[: min(positions)].strip().rstrip(":：|；; ")
+    prefix = re.sub(r"^\s*[-*]\s+", "", prefix).strip()
+    parts = [part.strip() for part in prefix.split("|") if part.strip()]
+    if len(parts) >= 3 and re.fullmatch(r"C\d{3}-\d{3}", parts[0]):
+        return parts[1]
+    if len(parts) >= 2:
+        for part in parts:
+            if "/" in part or "." in part:
+                return part
+    return prefix
+
+def _clean_raw_diff_value(value: str) -> str:
+    text = _strip_raw_diff_markers(value)
+    parts = [part.strip().rstrip(",，;； ") for part in text.split(" | ")]
+    return " | ".join(part for part in parts if part)
+
+def _strip_raw_diff_markers(value: str) -> str:
+    text = RAW_DIFF_HUNK_RE.sub("", str(value or ""))
+    text = text.replace("删除/旧值:", "").replace("新增/新值:", "")
+    text = re.sub(r"\s+", " ", text).strip(" ：:；;，,")
+    return text[:500]
+
+def unique_texts(values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 def first_non_empty_line(text: str) -> str:
     for line in str(text or "").splitlines():

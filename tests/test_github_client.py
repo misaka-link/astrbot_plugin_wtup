@@ -19,6 +19,17 @@ class FailingGitHubClient(GitHubClient):
         return {"ok": True}
 
 
+class RecordingGitHubClient(GitHubClient):
+    def __init__(self, payload, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.payload = payload
+        self.paths: list[str] = []
+
+    def _request_json(self, path):
+        self.paths.append(path)
+        return self.payload
+
+
 class GitHubClientRetryTest(unittest.TestCase):
     def test_default_retry_delay_is_minutes_with_four_retries(self) -> None:
         client = GitHubClient()
@@ -69,3 +80,22 @@ class GitHubClientRetryTest(unittest.TestCase):
             client._request_json_with_retry("https://example.invalid", {})
 
         self.assertEqual(client.calls, 1)
+
+    def test_get_recent_commits_requests_limited_branch_commits(self) -> None:
+        client = RecordingGitHubClient(
+            [
+                {
+                    "sha": "head",
+                    "html_url": "https://example.invalid/head",
+                    "commit": {"message": "head", "author": {"name": "author", "date": "date"}},
+                    "parents": [{"sha": "base"}],
+                }
+            ]
+        )
+
+        commits = client.get_recent_commits("owner/repo", "master", 2)
+
+        self.assertEqual(client.paths, ["/repos/owner/repo/commits?sha=master&per_page=2"])
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(commits[0].sha, "head")
+        self.assertEqual(commits[0].parents, ["base"])

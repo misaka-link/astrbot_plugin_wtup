@@ -61,6 +61,14 @@ class GitHubClient:
         payload = self._request_json(f"/repos/{repo}/commits/{urllib.parse.quote(branch, safe='')}")
         return self._commit_ref_from_payload(payload)
 
+    def get_recent_commits(self, repo: str, branch: str, limit: int) -> list[CommitRef]:
+        safe_branch = urllib.parse.quote(branch, safe="")
+        per_page = max(1, min(100, int(limit)))
+        payload = self._request_json(f"/repos/{repo}/commits?sha={safe_branch}&per_page={per_page}")
+        if not isinstance(payload, list):
+            return []
+        return [self._commit_ref_from_payload(item) for item in payload if isinstance(item, dict)]
+
     def get_commit(self, repo: str, sha: str) -> dict[str, Any]:
         return self._request_json(f"/repos/{repo}/commits/{urllib.parse.quote(sha, safe='')}")
 
@@ -84,14 +92,14 @@ class GitHubClient:
         _logger.warning("[%s] API 请求完成: /repos/%s/contents/%s?ref=%s", PLUGIN_NAME, repo, safe_path, safe_ref)
         return text
 
-    def _request_json(self, path: str) -> dict[str, Any]:
+    def _request_json(self, path: str) -> Any:
         url = f"{GITHUB_API_BASE}{path}"
         _logger.warning("[%s] API 请求: %s", PLUGIN_NAME, path)
         result = self._request_json_with_retry(url, self._api_headers())
         _logger.warning("[%s] API 请求完成: %s", PLUGIN_NAME, path)
         return result
 
-    def _request_json_with_retry(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
+    def _request_json_with_retry(self, url: str, headers: dict[str, str]) -> Any:
         last_error: GitHubRequestError | None = None
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
@@ -113,7 +121,7 @@ class GitHubClient:
                 last_error = exc
         raise last_error or GitHubRequestError(message="retry exhausted")
 
-    def _do_request_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
+    def _do_request_json(self, url: str, headers: dict[str, str]) -> Any:
         request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:

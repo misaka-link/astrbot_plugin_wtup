@@ -278,6 +278,104 @@ class AnalyzerMergeTest(unittest.TestCase):
         titles = [section["title"] for section in covered["update_sections"]]
         self.assertIn("需复核的未覆盖变更", titles)
 
+    def test_coverage_checker_compacts_repeated_uncovered_diff_entries(self) -> None:
+        patch = """@@ -42303,7 +42303,7 @@
+-        "_template": "rendinst_replicated",
++        "_template": "rendinst",
+@@ -42329,7 +42329,7 @@
+-        "_template": "rendinst_replicated",
++        "_template": "rendinst",
+"""
+        files = [
+            {
+                "filename": "aces.vromfs.bin_u/gamedata/scenes/hangar_field_halloween_objects.blkx",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 2,
+                "patch": patch,
+            }
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=1,
+            additions=2,
+            deletions=2,
+            changed_files=1,
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=len(patch))],
+        )
+        payload = analysis("参数调整", "模型只写了概括")
+
+        covered = enforce_change_coverage(summary, summary.chunks, payload)
+
+        review_sections = [
+            section
+            for section in covered["update_sections"]
+            if section["title"].startswith("需复核的未覆盖变更")
+        ]
+        self.assertEqual(len(review_sections), 1)
+        items = review_sections[0]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source_ids"], ["C001-001", "C001-002"])
+        self.assertIn("2 处同类未覆盖变更", items[0]["text"])
+        self.assertIn('"_template": "rendinst_replicated"', items[0]["text"])
+        self.assertIn('"_template": "rendinst"', items[0]["text"])
+        self.assertNotIn('", ->', items[0]["text"])
+        self.assertNotIn('",，', items[0]["text"])
+        self.assertNotIn("@@", items[0]["text"])
+        self.assertNotIn("删除/旧值", items[0]["text"])
+        self.assertNotIn("新增/新值", items[0]["text"])
+
+    def test_normalization_filters_raw_diff_summary_copied_by_model(self) -> None:
+        payload = analysis(
+            "需复核的未覆盖变更",
+            'aces.vromfs.bin_u/gamedata/scenes/hangar_field_halloween_objects.blkx: @@ -42303,7 +42303,7 @@；删除/旧值: "_template": "rendinst_replicated",；新增/新值: "_template": "rendinst",',
+        )
+        payload["update_sections"][0]["items"][0]["source_ids"] = ["C001-001"]
+        payload["ai_analysis"]["changed_content"] = [
+            'aces.vromfs.bin_u/gamedata/scenes/hangar_field_halloween_objects.blkx: @@ -42303,7 +42303,7 @@；删除/旧值: "_template": "rendinst_replicated",；新增/新值: "_template": "rendinst",'
+        ]
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        item_text = parsed["update_sections"][0]["items"][0]["text"]
+        changed_text = parsed["ai_analysis"]["changed_content"][0]
+        self.assertIn('"_template": "rendinst_replicated" -> "_template": "rendinst"', item_text)
+        self.assertNotIn("@@", item_text)
+        self.assertNotIn("删除/旧值", item_text)
+        self.assertNotIn("新增/新值", item_text)
+        self.assertEqual(item_text, changed_text)
+        self.assertEqual(parsed["update_sections"][0]["items"][0]["source_ids"], ["C001-001"])
+
+    def test_normalization_merges_duplicate_raw_diff_summary_items(self) -> None:
+        payload = analysis("需复核的未覆盖变更", "占位")
+        payload["update_sections"][0]["items"] = [
+            {
+                "text": 'aces.vromfs.bin_u/gamedata/scenes/hangar_field_halloween_objects.blkx: @@ -42303,7 +42303,7 @@；删除/旧值: "_template": "rendinst_replicated",；新增/新值: "_template": "rendinst",',
+                "children": [],
+                "source_ids": ["C001-001"],
+            },
+            {
+                "text": 'aces.vromfs.bin_u/gamedata/scenes/hangar_field_halloween_objects.blkx: @@ -42329,7 +42329,7 @@；删除/旧值: "_template": "rendinst_replicated",；新增/新值: "_template": "rendinst",',
+                "children": [],
+                "source_ids": ["C001-002"],
+            },
+        ]
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        items = parsed["update_sections"][0]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source_ids"], ["C001-001", "C001-002"])
+        self.assertIn('"_template": "rendinst_replicated" -> "_template": "rendinst"', items[0]["text"])
+        self.assertNotIn("@@", items[0]["text"])
+        self.assertNotIn("删除/旧值", items[0]["text"])
+        self.assertNotIn("新增/新值", items[0]["text"])
+
     def test_merge_cleans_pagination_section_titles(self) -> None:
         summary = make_summary()
         results = [
@@ -531,6 +629,91 @@ class ReviewModelTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.applied_revision)
         self.assertIn("review", result.analysis)
         self.assertEqual(context.kwargs[0]["chat_provider_id"], "review-provider")
+
+    async def test_quality_review_applies_item_revision_without_touching_source_ids(self) -> None:
+        summary = make_summary()
+        payload = with_source_ids(analysis("参数调整", "部分载具参数变化"), "C001-001")
+        context = FakeContext(
+            json_response(
+                {
+                    "passed": False,
+                    "issues": ["修正模糊表述"],
+                    "severity": "中",
+                    "item_revisions": [
+                        {
+                            "item_id": "I001",
+                            "new_text": "M1 Abrams(M1 艾布拉姆斯) 参数变化，对游戏表现影响待复核。",
+                            "reason": "点名具体载具",
+                        }
+                    ],
+                }
+            )
+        )
+        settings = load_config(
+            {
+                "enable_review_model": True,
+                "review_mode": "quality",
+                "review_quality_provider_id": "quality-review-provider",
+            }
+        )
+
+        result = await review_analysis_with_usage(context, settings, summary, payload)
+
+        item = result.analysis["update_sections"][0]["items"][0]
+        self.assertTrue(result.applied_revision)
+        self.assertIn("M1 Abrams", item["text"])
+        self.assertEqual(item["source_ids"], ["C001-001"])
+        self.assertEqual(result.revision_stats["attempted"], 1)
+        self.assertEqual(result.revision_stats["applied"], 1)
+        self.assertIn('"item_id": "I001"', context.kwargs[0]["prompt"])
+
+    async def test_quality_review_rejects_unknown_item_revision(self) -> None:
+        summary = make_summary()
+        payload = with_source_ids(analysis("参数调整", "部分载具参数变化"), "C001-001")
+        context = FakeContext(
+            json_response(
+                {
+                    "passed": False,
+                    "issues": [],
+                    "severity": "中",
+                    "item_revisions": [{"item_id": "I999", "new_text": "不应采用"}],
+                }
+            )
+        )
+        settings = load_config({"enable_review_model": True, "review_mode": "quality"})
+
+        result = await review_analysis_with_usage(context, settings, summary, payload)
+
+        self.assertFalse(result.applied_revision)
+        self.assertEqual(result.analysis["update_sections"][0]["items"][0]["text"], "部分载具参数变化")
+        self.assertEqual(result.revision_stats["applied"], 0)
+        self.assertEqual(result.revision_stats["rejected"], 1)
+        self.assertTrue(any("I999 不存在" in issue for issue in result.issues))
+
+    async def test_quality_review_rejects_item_revision_with_mismatched_source_ids(self) -> None:
+        summary = make_summary()
+        payload = with_source_ids(analysis("参数调整", "部分载具参数变化"), "C001-001")
+        context = FakeContext(
+            json_response(
+                {
+                    "passed": False,
+                    "issues": [],
+                    "severity": "中",
+                    "item_revisions": [
+                        {"item_id": "I001", "new_text": "不应采用", "source_ids": ["C999-001"]}
+                    ],
+                }
+            )
+        )
+        settings = load_config({"enable_review_model": True, "review_mode": "quality"})
+
+        result = await review_analysis_with_usage(context, settings, summary, payload)
+
+        self.assertFalse(result.applied_revision)
+        self.assertEqual(result.analysis["update_sections"][0]["items"][0]["text"], "部分载具参数变化")
+        self.assertEqual(result.revision_stats["applied"], 0)
+        self.assertEqual(result.revision_stats["rejected"], 1)
+        self.assertTrue(any("source_ids 与原条目不一致" in issue for issue in result.issues))
 
     async def test_quality_review_applies_revision_when_source_ids_are_kept(self) -> None:
         summary = make_summary()

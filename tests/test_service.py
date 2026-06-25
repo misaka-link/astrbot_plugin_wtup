@@ -268,6 +268,71 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(analyze_chunks.await_count, 2)
             self.assertEqual(len(list((base / "analysis_cache").glob("base...head_*"))), 2)
 
+    async def test_force_commit_count_uses_oldest_forced_parent_as_base(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            template_path = base / "help_miku.html"
+            template_path.write_text("<style>{{ style_css }}</style>{{ summary_html }}", encoding="utf-8")
+            template_path.with_suffix(".css").write_text(".card {}", encoding="utf-8")
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "old-state"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({}),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=template_path,
+            )
+
+            latest = type("Commit", (), {"sha": "head", "parents": ["mid"]})()
+            second = type("Commit", (), {"sha": "mid", "parents": ["base"]})()
+            compare_payload = {
+                "base_commit": {"sha": "base"},
+                "merge_base_commit": {"sha": "base"},
+                "status": "ahead",
+                "ahead_by": 2,
+                "total_commits": 2,
+                "commits": [],
+                "files": [
+                    {
+                        "filename": "a.blkx",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "patch": "+a",
+                    }
+                ],
+                "html_url": "",
+            }
+
+            with (
+                patch("wtup.service.GitHubClient") as client_class,
+                patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[])),
+                patch("wtup.service.merge_chunk_analyses", return_value={"summary": "摘要", "update_sections": []}),
+                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+            ):
+                client = client_class.return_value
+                client.get_latest_commit.return_value = latest
+                client.get_recent_commits.return_value = [latest, second]
+                client.compare_commits.return_value = compare_payload
+                client.compare_diff_text.return_value = ""
+
+                await service.check_once(
+                    manual=True,
+                    force_latest=True,
+                    send_to_groups=False,
+                    force_commit_count=2,
+                )
+
+            client.get_recent_commits.assert_called_once_with("gszabi99/War-Thunder-Datamine", "master", 2)
+            client.compare_commits.assert_called_once_with("gszabi99/War-Thunder-Datamine", "base", "head")
+            client.compare_diff_text.assert_called_once_with("gszabi99/War-Thunder-Datamine", "base", "head")
+
     async def test_check_once_uses_real_token_usage_for_append_text(self) -> None:
         with TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -807,7 +872,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(repo_state["last_commit_sha"], "head")
             self.assertIn("last_pushed_task", repo_state)
 
-    async def test_group_report_failure_does_not_mark_commit_seen(self) -> None:
+    async def test_group_report_failure_still_marks_commit_seen_after_report_generated(self) -> None:
         with TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             template_path = base / "help_miku.html"
@@ -880,12 +945,93 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 result = await service.check_once(manual=False, force_latest=False, send_to_groups=True)
 
             repo_state = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")
-            self.assertFalse(result["commit_marked_complete"])
+            self.assertTrue(result["commit_marked_complete"])
             self.assertEqual(result["report_sent_count"], 0)
             self.assertEqual(result["report_failed_count"], 1)
-            self.assertEqual(repo_state["last_commit_sha"], "base")
-            self.assertNotIn("last_pushed_task", repo_state)
-            self.assertIn("未标记本次更新完成", result["message"])
+            self.assertEqual(repo_state["last_commit_sha"], "head")
+            self.assertIn("last_pushed_task", repo_state)
+            self.assertNotIn("未标记本次更新完成", result["message"])
+
+    async def test_group_log_file_success_marks_commit_seen_when_report_image_fails(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            template_path = base / "help_miku.html"
+            template_path.write_text("<style>{{ style_css }}</style>{{ summary_html }}", encoding="utf-8")
+            template_path.with_suffix(".css").write_text(".card {}", encoding="utf-8")
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config(
+                    {
+                        "target_groups": ["123"],
+                        "analysis_file_groups": ["123"],
+                    }
+                ),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=template_path,
+            )
+
+            latest = type("Commit", (), {"sha": "head", "parents": ["base"]})()
+            compare_payload = {
+                "base_commit": {"sha": "base"},
+                "merge_base_commit": {"sha": "base"},
+                "status": "ahead",
+                "ahead_by": 1,
+                "total_commits": 1,
+                "commits": [],
+                "files": [
+                    {
+                        "filename": "a.blkx",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "patch": "+a",
+                    }
+                ],
+                "html_url": "",
+            }
+            chunk_result = ChunkAnalysis(
+                1,
+                1,
+                {
+                    "report_title": "2.56.0.38->2.56.0.39",
+                    "summary": "摘要",
+                    "update_sections": [],
+                },
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+            )
+
+            with (
+                patch("wtup.service.GitHubClient") as client_class,
+                patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
+                patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
+                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.push_report", new=AsyncMock(return_value=(0, 1))),
+                patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))),
+            ):
+                client = client_class.return_value
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = compare_payload
+                client.compare_diff_text.return_value = ""
+
+                result = await service.check_once(manual=False, force_latest=False, send_to_groups=True)
+
+            repo_state = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")
+            self.assertTrue(result["commit_marked_complete"])
+            self.assertEqual(result["report_sent_count"], 0)
+            self.assertEqual(result["report_failed_count"], 1)
+            self.assertEqual(result["file_sent_count"], 1)
+            self.assertEqual(result["file_failed_count"], 0)
+            self.assertEqual(repo_state["last_commit_sha"], "head")
+            self.assertIn("last_pushed_task", repo_state)
+            self.assertNotIn("未标记本次更新完成", result["message"])
 
     async def test_analysis_failure_skips_group_push_and_notifies_admins(self) -> None:
         with TemporaryDirectory() as temp_dir:

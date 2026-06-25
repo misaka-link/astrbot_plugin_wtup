@@ -38,6 +38,9 @@ from .analysis import TokenUsage
 from .termination import check_task_termination, task_should_terminate
 
 
+MAX_FORCE_COMMIT_COUNT = 5
+
+
 @dataclass
 class ReportArtifact:
     key: str
@@ -156,9 +159,11 @@ class UpdateCheckService:
         event: Any | None = None,
         target_groups: list[str] | None = None,
         analysis_file_groups: list[str] | None = None,
+        force_commit_count: int = 1,
     ) -> dict[str, Any]:
         async with self._check_lock:
             started_at = time.monotonic()
+            force_commit_count = max(1, min(MAX_FORCE_COMMIT_COUNT, int(force_commit_count or 1)))
             task_log_path = self.runtime.start_task_log(
                 manual=manual,
                 force_latest=force_latest,
@@ -176,6 +181,7 @@ class UpdateCheckService:
                 {
                     "报告推送目标数": len(push_targets),
                     "日志文件推送目标数": len(file_targets),
+                    "强制提交数量": force_commit_count if force_latest else 0,
                 },
             )
             check_task_termination(self.settings, "任务开始")
@@ -235,7 +241,49 @@ class UpdateCheckService:
                 return {"message": message, "task_log_path": task_log_path}
 
             if force_latest and latest.parents:
-                previous_sha = latest.parents[0]
+                if force_commit_count <= 1:
+                    previous_sha = latest.parents[0]
+                else:
+                    logger.warning("[%s] 强制分析最新 %d 个 commit，获取提交列表...", PLUGIN_NAME, force_commit_count)
+                    self.runtime.record_task_log(
+                        "获取强制提交范围",
+                        {"提交数量": force_commit_count, "最新提交": short_sha(latest.sha)},
+                    )
+                    check_task_termination(self.settings, "获取强制提交范围前")
+                    recent_commits = await asyncio.to_thread(
+                        client.get_recent_commits,
+                        REPO_FULL_NAME,
+                        BRANCH_NAME,
+                        force_commit_count,
+                    )
+                    check_task_termination(self.settings, "获取强制提交范围后")
+                    if len(recent_commits) < force_commit_count:
+                        message = f"只获取到 {len(recent_commits)} 个最新 commit，无法强制分析最新 {force_commit_count} 个 commit。"
+                        self.runtime.finish_task_log(
+                            status="失败",
+                            message=message,
+                            elapsed_seconds=time.monotonic() - started_at,
+                        )
+                        return {"message": message, "task_log_path": task_log_path}
+                    oldest_forced = recent_commits[force_commit_count - 1]
+                    if oldest_forced.parents:
+                        previous_sha = oldest_forced.parents[0]
+                    else:
+                        message = f"最新第 {force_commit_count} 个 commit 没有父提交，无法确定对比起点。"
+                        self.runtime.finish_task_log(
+                            status="失败",
+                            message=message,
+                            elapsed_seconds=time.monotonic() - started_at,
+                        )
+                        return {"message": message, "task_log_path": task_log_path}
+                    self.runtime.record_task_log(
+                        "强制提交范围",
+                        {
+                            "提交数量": force_commit_count,
+                            "起点": short_sha(previous_sha),
+                            "终点": short_sha(latest.sha),
+                        },
+                    )
 
             if send_to_groups and not push_targets:
                 message = "发现新 commit，但未配置推送群聊列表，已跳过模型分析和推送。"
@@ -336,6 +384,8 @@ class UpdateCheckService:
             failed_count = 0
             report_sent_count = 0
             report_failed_count = 0
+            file_sent_count = 0
+            file_failed_count = 0
             admin_sent_count = 0
             admin_failed_count = 0
 
@@ -441,6 +491,10 @@ class UpdateCheckService:
                             "发现问题数": len(review_result.issues),
                             "发现问题": review_result.issues,
                             "采用修正版": "是" if review_result.applied_revision else "否",
+                            "局部修正尝试": review_result.revision_stats.get("attempted", 0),
+                            "局部修正成功": review_result.revision_stats.get("applied", 0),
+                            "局部修正拒绝": review_result.revision_stats.get("rejected", 0),
+                            "局部修正拒绝原因": review_result.revision_stats.get("rejected_reasons", []),
                             "真实总token": review_result.token_usage.total_tokens,
                         },
                     )
@@ -710,6 +764,10 @@ class UpdateCheckService:
                         event=event,
                         should_terminate=lambda: task_should_terminate(self.settings),
                     )
+                    sent_count += file_ok
+                    failed_count += file_failed
+                    file_sent_count += file_ok
+                    file_failed_count += file_failed
                     logger.warning(
                         "[%s] %s分析日志文件推送完成: 成功 %d，失败 %d",
                         PLUGIN_NAME,
@@ -741,7 +799,7 @@ class UpdateCheckService:
                     for report in report_artifacts
                 ],
                 manual=manual,
-                sent_to_groups=report_sent_count > 0,
+                sent_to_groups=send_to_groups and not analysis_failed and bool(report_artifacts),
                 target_groups=push_targets,
                 sent_count=sent_count,
                 failed_count=failed_count,
@@ -749,7 +807,8 @@ class UpdateCheckService:
                 task_log_path=task_log_path,
             )
 
-            should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and report_sent_count > 0)
+            reports_generated = not analysis_failed and bool(report_artifacts)
+            should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and reports_generated)
             if should_mark_seen:
                 self.runtime.save_seen_commit(latest.sha)
             elif analysis_failed:
@@ -785,8 +844,6 @@ class UpdateCheckService:
                         message += " 未配置管理员列表。"
                 else:
                     message += f" 推送成功 {sent_count}，失败 {failed_count}。"
-                if not analysis_failed and push_targets and report_sent_count <= 0:
-                    message += " 报告未成功发出，未标记本次更新完成，下次循环会继续重试。"
             warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
             result = {
                 "message": message,
@@ -800,6 +857,8 @@ class UpdateCheckService:
                 "commit_marked_complete": should_mark_seen,
                 "report_sent_count": report_sent_count,
                 "report_failed_count": report_failed_count,
+                "file_sent_count": file_sent_count,
+                "file_failed_count": file_failed_count,
                 "analysis_source": analysis_source,
                 "reports": [
                     {
