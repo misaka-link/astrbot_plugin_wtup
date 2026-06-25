@@ -57,6 +57,7 @@ COMMAND_RECEIVED_EMOJI_ID = "289"
 COMMAND_DONE_EMOJI_ID = "124"
 CLEAR_CACHE_FILES_CONFIG_KEY = "clear_cache_files"
 TERMINATE_RUNNING_TASK_CONFIG_KEY = "terminate_running_task"
+ENABLE_TASK_LOCK_CONFIG_KEY = "enable_task_lock"
 RESTORE_DEFAULT_PROMPTS_CONFIG_KEY = "restore_default_prompts"
 
 
@@ -176,6 +177,15 @@ def _parse_force_commit_count(message: str, *, force_latest: bool) -> tuple[int,
     if count < 1 or count > MAX_FORCE_COMMIT_COUNT:
         return 1, f"提交数量必须在 1 到 {MAX_FORCE_COMMIT_COUNT} 之间。\n{usage}"
     return count, ""
+
+
+def _command_args(message: str, command: str) -> list[str]:
+    command_names = {command, f"/{command}"}
+    return [
+        token
+        for token in re.split(r"\s+", str(message or "").strip())
+        if token and token not in command_names
+    ]
 
 
 def _set_config_value(config: Any, key: str, value: Any) -> bool:
@@ -313,8 +323,10 @@ class WTUpdatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = config if config is not None else {}
+        self._terminating = False
         self.settings: PluginConfig = load_config(self.config)
         self.data_dir = self._resolve_data_dir()
+        self._reset_task_controls_on_startup()
         self._restore_default_prompts_on_startup()
         self._clear_cache_files_on_startup()
         self.state_store = StateStore(self.data_dir / "state.json")
@@ -341,10 +353,14 @@ class WTUpdatePlugin(Star):
             settings,
             task_termination_checker=self._should_terminate_running_task,
             task_termination_resetter=self._reset_terminate_running_task,
+            task_lock_checker=self._is_task_lock_enabled,
         )
 
     def _should_terminate_running_task(self) -> bool:
-        return load_config(self.config).terminate_running_task
+        return self._terminating or load_config(self.config).terminate_running_task
+
+    def _is_task_lock_enabled(self) -> bool:
+        return load_config(self.config).enable_task_lock
 
     def _reset_terminate_running_task(self) -> None:
         if not load_config(self.config).terminate_running_task:
@@ -354,6 +370,20 @@ class WTUpdatePlugin(Star):
         self.settings = self._with_dynamic_controls(load_config(self.config))
         self.settings = self.service.with_runtime_hooks(self.settings)
         self.service.settings = self.settings
+
+    def _reset_task_controls_on_startup(self) -> None:
+        current = load_config(self.config)
+        changed = False
+        for key, enabled in (
+            (TERMINATE_RUNNING_TASK_CONFIG_KEY, current.terminate_running_task),
+            (ENABLE_TASK_LOCK_CONFIG_KEY, current.enable_task_lock),
+        ):
+            if enabled:
+                changed = _set_config_value(self.config, key, False) or changed
+        if changed:
+            _save_config(self.config)
+            self.settings = load_config(self.config)
+            logger.warning("[%s] 插件加载时已重置任务控制开关：终止当前任务=关闭，任务锁=关闭", PLUGIN_NAME)
 
     def _clear_cache_files_on_startup(self) -> None:
         if not self.settings.clear_cache_files:
@@ -427,6 +457,7 @@ class WTUpdatePlugin(Star):
             f"最大重试次数: {self.settings.max_retry_count}",
             f"GitHub 请求最大重试次数: {self.settings.github_max_retry_count}",
             f"终止当前任务开关: {'开启' if self._should_terminate_running_task() else '关闭'}",
+            f"任务锁: {'开启' if load_config(self.config).enable_task_lock else '关闭'}",
             f"文件保留数量: {self.settings.max_saved_artifacts or '不限制'}",
         ]
         await self._react_to_command_done(event)
@@ -445,6 +476,40 @@ class WTUpdatePlugin(Star):
             f"{origin}\n\n"
             "后台配置的“推送群聊列表”支持填写群号或 unified_msg_origin，每行一个。"
         )
+
+    @filter.command("wtup_list")
+    async def wtup_list(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
+        if not _event_is_configured_admin(event, self.settings.admin_targets):
+            yield event.plain_result("权限不足：/wtup_list 只能由插件后台“管理员列表”中的用户执行。")
+            return
+        try:
+            result = await self.service.list_pending_commits()
+        except Exception as exc:
+            logger.warning("[%s] 获取未推送列表失败: %s", PLUGIN_NAME, exc, exc_info=True)
+            yield event.plain_result(f"获取未推送列表失败：{exc}")
+            return
+        await self._react_to_command_done(event)
+        yield event.plain_result(str(result.get("message") or "未获取到未推送列表。"))
+
+    @filter.command("wtup_ok")
+    async def wtup_ok(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
+        if not _event_is_configured_admin(event, self.settings.admin_targets):
+            yield event.plain_result("权限不足：/wtup_ok 只能由插件后台“管理员列表”中的用户执行。")
+            return
+        args = _command_args(str(getattr(event, "message_str", "") or ""), "wtup_ok")
+        if len(args) != 1:
+            yield event.plain_result("用法：/wtup_ok <commit_sha>")
+            return
+        try:
+            result = await self.service.mark_commit_pushed(args[0])
+        except Exception as exc:
+            logger.warning("[%s] 手动标记 commit 完成失败: %s", PLUGIN_NAME, exc, exc_info=True)
+            yield event.plain_result(f"手动标记失败：{exc}")
+            return
+        await self._react_to_command_done(event)
+        yield event.plain_result(str(result.get("message") or "手动标记完成。"))
 
     @filter.command("wtup_check")
     async def wtup_check(self, event: AstrMessageEvent):
@@ -636,10 +701,22 @@ class WTUpdatePlugin(Star):
         ).record_model_error(stage, error, metadata)
 
     async def terminate(self):
+        self._terminating = True
+        _set_config_value(self.config, TERMINATE_RUNNING_TASK_CONFIG_KEY, True)
+        _set_config_value(self.config, ENABLE_TASK_LOCK_CONFIG_KEY, False)
+        _save_config(self.config)
+        self.settings = self._with_dynamic_controls(load_config(self.config))
+        self.service.settings = self.service.with_runtime_hooks(self.settings)
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        check_lock = getattr(getattr(self, "service", None), "_check_lock", None)
+        if check_lock is not None and check_lock.locked():
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                if not check_lock.locked():
+                    break
         logger.warning("[%s] 插件已卸载", PLUGIN_NAME)

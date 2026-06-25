@@ -27,7 +27,7 @@ from .analyzer import (
 )
 from .analysis_cache import AnalysisResultCache
 from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME, PluginConfig
-from .diff_collector import DiffChunk, build_diff_summary, short_sha
+from .diff_collector import DiffChunk, build_diff_summary, extract_version_from_commit, short_sha
 from .github_cache import GitHubCache
 from .github_client import GitHubClient, GitHubRequestError
 from .notifier import push_admin_notification, push_log_file, push_report, push_text
@@ -150,6 +150,107 @@ class UpdateCheckService:
         self.runtime.settings = settings
         return settings
 
+    async def list_pending_commits(self) -> dict[str, Any]:
+        client = GitHubClient(
+            token=self.settings.github_token,
+            max_retries=self.settings.github_max_retry_count,
+        )
+        latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
+        if not latest.sha:
+            return {"message": "未获取到最新 commit。", "pending_commits": []}
+
+        repo_state = self.state_store.get_repo_state(REPO_FULL_NAME)
+        previous_sha = str(repo_state.get("last_commit_sha") or "").strip()
+        if not previous_sha:
+            return {
+                "message": (
+                    "尚未建立已推送基线，无法判断未推送列表。\n"
+                    f"当前最新提交: {short_sha(latest.sha)}"
+                ),
+                "pending_commits": [],
+            }
+        if previous_sha == latest.sha:
+            return {
+                "message": f"没有未推送 commit。当前已完成: {short_sha(latest.sha)}",
+                "pending_commits": [],
+            }
+
+        compare_payload = await asyncio.to_thread(
+            client.compare_commits,
+            REPO_FULL_NAME,
+            previous_sha,
+            latest.sha,
+        )
+        commits = [
+            self._pending_commit_item(commit_payload)
+            for commit_payload in compare_payload.get("commits", [])
+            if isinstance(commit_payload, dict)
+        ]
+        if not commits:
+            return {
+                "message": f"没有未推送 commit。当前已完成: {short_sha(previous_sha)}",
+                "pending_commits": [],
+            }
+
+        lines = ["未推送 commit 列表："]
+        lines.extend(self._format_pending_commit_line(item) for item in commits)
+        return {"message": "\n".join(lines), "pending_commits": commits}
+
+    async def mark_commit_pushed(self, commit_ref: str) -> dict[str, Any]:
+        target_ref = str(commit_ref or "").strip()
+        if not target_ref:
+            return {"message": "用法：/wtup_ok <commit_sha>", "marked": False}
+
+        client = GitHubClient(
+            token=self.settings.github_token,
+            max_retries=self.settings.github_max_retry_count,
+        )
+        try:
+            commit_payload = await asyncio.to_thread(client.get_commit, REPO_FULL_NAME, target_ref)
+        except GitHubRequestError as exc:
+            return {"message": f"未找到 commit {target_ref}：{exc.message or exc}", "marked": False}
+
+        target_sha = str(commit_payload.get("sha") or "").strip()
+        if not target_sha:
+            return {"message": f"未找到 commit {target_ref}。", "marked": False}
+
+        repo_state = self.state_store.get_repo_state(REPO_FULL_NAME)
+        previous_sha = str(repo_state.get("last_commit_sha") or "").strip()
+        if previous_sha and (target_sha == previous_sha or previous_sha.startswith(target_ref)):
+            return {"message": f"{short_sha(target_sha)} 已经是当前已完成 commit。", "marked": False}
+
+        latest = await asyncio.to_thread(client.get_latest_commit, REPO_FULL_NAME, BRANCH_NAME)
+        if previous_sha:
+            compare_payload = await asyncio.to_thread(
+                client.compare_commits,
+                REPO_FULL_NAME,
+                previous_sha,
+                latest.sha,
+            )
+            pending_shas = {
+                str(item.get("sha") or "").strip()
+                for item in compare_payload.get("commits", [])
+                if isinstance(item, dict)
+            }
+            if target_sha not in pending_shas:
+                return {
+                    "message": (
+                        f"{short_sha(target_sha)} 不在当前未推送列表，未修改状态。\n"
+                        "请先使用 /wtup_list 查看可标记的 commit。"
+                    ),
+                    "marked": False,
+                }
+
+        self.runtime.save_seen_commit(target_sha)
+        version = extract_version_from_commit(commit_payload)
+        suffix = f" {version}" if version else ""
+        return {
+            "message": f"已标记为推送完成: {short_sha(target_sha)}{suffix}",
+            "marked": True,
+            "sha": target_sha,
+            "version": version,
+        }
+
     async def check_once(
         self,
         *,
@@ -161,6 +262,14 @@ class UpdateCheckService:
         analysis_file_groups: list[str] | None = None,
         force_commit_count: int = 1,
     ) -> dict[str, Any]:
+        if self._task_lock_enabled() and self._check_lock.locked():
+            message = "已有 WT 更新检查任务正在运行，任务锁已开启，本次请求已拒绝。"
+            logger.warning("[%s] %s", PLUGIN_NAME, message)
+            return {
+                "message": message,
+                "locked": True,
+                "task_log_path": self.runtime.current_task_log_path,
+            }
         async with self._check_lock:
             started_at = time.monotonic()
             force_commit_count = max(1, min(MAX_FORCE_COMMIT_COUNT, int(force_commit_count or 1)))
@@ -883,3 +992,28 @@ class UpdateCheckService:
                 return result
             result["message"] = fallback_text or message
             return result
+
+    def _task_lock_enabled(self) -> bool:
+        checker = getattr(self.settings, "task_lock_checker", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return bool(getattr(self.settings, "enable_task_lock", False))
+
+    @staticmethod
+    def _pending_commit_item(commit_payload: dict[str, Any]) -> dict[str, str]:
+        commit = commit_payload.get("commit") if isinstance(commit_payload.get("commit"), dict) else {}
+        message = str(commit.get("message") or commit_payload.get("message") or "").strip()
+        return {
+            "sha": str(commit_payload.get("sha") or "").strip(),
+            "short_sha": short_sha(commit_payload.get("sha") or ""),
+            "version": extract_version_from_commit(commit_payload),
+            "message": message.splitlines()[0] if message else "",
+        }
+
+    @staticmethod
+    def _format_pending_commit_line(item: dict[str, str]) -> str:
+        version = str(item.get("version") or "").strip() or "无版本号"
+        return f"{item.get('short_sha') or short_sha(item.get('sha'))} {version}"

@@ -306,6 +306,12 @@
     "hint": "默认关闭。开启后，正在执行的检查任务会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中检测到该开关并尽快终止；终止后不会标记本次 commit 完成，并会自动改回关闭。",
     "default": false
   },
+  "enable_task_lock": {
+    "type": "bool",
+    "description": "任务锁",
+    "hint": "默认关闭。开启后，如果已有检查任务正在运行，新的定时或手动检查会直接拒绝执行，不会排队等待；插件重载时会自动改回关闭。",
+    "default": false
+  },
   "max_saved_artifacts": {
     "type": "int",
     "description": "插件文件最大保存数量",

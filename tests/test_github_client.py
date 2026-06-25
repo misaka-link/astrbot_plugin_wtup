@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from wtup.github_client import GitHubClient, GitHubRequestError
 from wtup.termination import TaskTerminatedError
@@ -96,6 +97,36 @@ class GitHubClientRetryTest(unittest.TestCase):
         commits = client.get_recent_commits("owner/repo", "master", 2)
 
         self.assertEqual(client.paths, ["/repos/owner/repo/commits?sha=master&per_page=2"])
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(commits[0].sha, "head")
+        self.assertEqual(commits[0].parents, ["base"])
+
+    def test_get_recent_commits_accepts_github_list_payload(self) -> None:
+        class FakeHeaders:
+            def get_content_charset(self):
+                return "utf-8"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'[{"sha":"head","html_url":"https://example.invalid/head",'
+                    b'"commit":{"message":"head","author":{"name":"author","date":"date"}},'
+                    b'"parents":[{"sha":"base"}]}]'
+                )
+
+        client = GitHubClient(max_retries=0)
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            commits = client.get_recent_commits("owner/repo", "master", 3)
+
         self.assertEqual(len(commits), 1)
         self.assertEqual(commits[0].sha, "head")
         self.assertEqual(commits[0].parents, ["base"])

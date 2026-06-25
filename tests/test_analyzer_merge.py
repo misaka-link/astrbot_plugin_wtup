@@ -561,11 +561,17 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual(settings.github_max_retry_count, 4)
         self.assertFalse(settings.terminate_running_task)
+        self.assertFalse(settings.enable_task_lock)
 
     def test_terminate_running_task_accepts_bool_like_values(self) -> None:
         settings = load_config({"terminate_running_task": "开启"})
 
         self.assertTrue(settings.terminate_running_task)
+
+    def test_enable_task_lock_accepts_bool_like_values(self) -> None:
+        settings = load_config({"enable_task_lock": "开启"})
+
+        self.assertTrue(settings.enable_task_lock)
 
     def test_dynamic_context_queue_defaults_to_enabled_with_limits(self) -> None:
         settings = load_config({})

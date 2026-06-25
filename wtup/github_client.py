@@ -137,7 +137,7 @@ class GitHubClient:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
             raise GitHubRequestError(message="GitHub returned invalid JSON") from exc
-        if not isinstance(payload, dict):
+        if not isinstance(payload, (dict, list)):
             raise GitHubRequestError(message="GitHub returned unexpected payload")
         return payload
 

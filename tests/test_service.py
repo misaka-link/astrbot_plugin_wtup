@@ -12,6 +12,28 @@ from wtup.state_store import StateStore
 
 
 class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_check_once_rejects_new_task_when_task_lock_enabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({"enable_task_lock": "开启"}),
+                state_store=StateStore(base / "state.json"),
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=base / "help_miku.html",
+            )
+
+            await service._check_lock.acquire()
+            try:
+                result = await service.check_once(manual=True, force_latest=False, send_to_groups=False)
+            finally:
+                service._check_lock.release()
+
+            self.assertTrue(result["locked"])
+            self.assertIn("任务锁已开启", result["message"])
+
     async def test_check_once_uses_render_host_for_html_render(self) -> None:
         with TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -332,6 +354,116 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             client.get_recent_commits.assert_called_once_with("gszabi99/War-Thunder-Datamine", "master", 2)
             client.compare_commits.assert_called_once_with("gszabi99/War-Thunder-Datamine", "base", "head")
             client.compare_diff_text.assert_called_once_with("gszabi99/War-Thunder-Datamine", "base", "head")
+
+    async def test_list_pending_commits_outputs_short_sha_and_version(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({}),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=base / "help_miku.html",
+            )
+
+            latest = type("Commit", (), {"sha": "0e0e9bc1234567890", "parents": ["base"]})()
+            compare_payload = {
+                "commits": [
+                    {
+                        "sha": "0e0e9bc1234567890",
+                        "commit": {"message": "2.56.0.43"},
+                    }
+                ]
+            }
+
+            with patch("wtup.service.GitHubClient") as client_class:
+                client = client_class.return_value
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = compare_payload
+
+                result = await service.list_pending_commits()
+
+            self.assertEqual(result["pending_commits"][0]["short_sha"], "0e0e9bc")
+            self.assertEqual(result["pending_commits"][0]["version"], "2.56.0.43")
+            self.assertEqual(result["message"], "未推送 commit 列表：\n0e0e9bc 2.56.0.43")
+
+    async def test_mark_commit_pushed_updates_seen_commit_when_pending(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({}),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=base / "help_miku.html",
+            )
+
+            target_sha = "0e0e9bc1234567890"
+            latest = type("Commit", (), {"sha": target_sha, "parents": ["base"]})()
+            commit_payload = {"sha": target_sha, "commit": {"message": "2.56.0.43"}}
+            compare_payload = {"commits": [commit_payload]}
+
+            with patch("wtup.service.GitHubClient") as client_class:
+                client = client_class.return_value
+                client.get_commit.return_value = commit_payload
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = compare_payload
+
+                result = await service.mark_commit_pushed("0e0e9bc")
+
+            repo_state = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")
+            self.assertTrue(result["marked"])
+            self.assertEqual(repo_state["last_commit_sha"], target_sha)
+            self.assertIn("已标记为推送完成: 0e0e9bc 2.56.0.43", result["message"])
+
+    async def test_mark_commit_pushed_rejects_commit_outside_pending_list(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({}),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=base / "help_miku.html",
+            )
+
+            target_sha = "0e0e9bc1234567890"
+            latest = type("Commit", (), {"sha": "head", "parents": ["base"]})()
+            commit_payload = {"sha": target_sha, "commit": {"message": "2.56.0.43"}}
+
+            with patch("wtup.service.GitHubClient") as client_class:
+                client = client_class.return_value
+                client.get_commit.return_value = commit_payload
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = {"commits": []}
+
+                result = await service.mark_commit_pushed("0e0e9bc")
+
+            repo_state = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")
+            self.assertFalse(result["marked"])
+            self.assertEqual(repo_state["last_commit_sha"], "base")
+            self.assertIn("不在当前未推送列表", result["message"])
 
     async def test_check_once_uses_real_token_usage_for_append_text(self) -> None:
         with TemporaryDirectory() as temp_dir:

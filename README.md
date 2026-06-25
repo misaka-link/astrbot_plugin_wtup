@@ -59,7 +59,7 @@ mode: commit
 - `model_concurrency`：模型请求并发数，默认 1 表示串行。
 - `enable_streaming_llm_call`：是否启用流式模型请求，默认关闭。开启后优先使用 AstrBot Provider 的 `text_chat_stream` 流式接口并聚合结果。
 - `target_groups`：推送群聊列表，每项一个群号或 `unified_msg_origin`。填写纯群号时会通过 OneBot `send_group_msg` 发送。
-- `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制` 和 `/wtup_check 强制全部`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
+- `admin_targets`：管理员列表。仅这些管理员可执行 `/wtup_check 强制`、`/wtup_check 强制全部`、`/wtup_list` 和 `/wtup_ok`；分析失败时也会私发通知这些管理员。每项填写一个私聊 `unified_msg_origin` 或 QQ 号；填写纯 QQ 号时会通过 OneBot `send_private_msg` 发送。
 - `analysis_file_groups`：发送分析文件的群列表，分析推送完成后会把本次 `.log` 文件发送到这些群。
 - `monitor_interval_minutes`：监控频率，默认 30 分钟。
 - `analysis_prompt`：分析提示词，默认要求按 War Thunder Datamine 更新日志风格逐条覆盖全部改动，并补充中文说明和实际影响。
@@ -98,6 +98,7 @@ mode: commit
 - `max_dynamic_context_chars`：单个动态补充请求最多带入模型的文件上下文字符数，默认 12000；设置为 0 表示不限制。
 - `clear_cache_files`：清空缓存文件，默认关闭。开启后插件下次加载时会清空插件数据目录中的 GitHub 缓存、日志、图片和状态文件，然后自动改回关闭。
 - `terminate_running_task`：终止当前正在运行的任务，默认关闭。开启后当前检查会在阶段切换、GitHub 重试等待、模型分片、动态补充、报告生成和推送循环中尽快停止，且不会把本次 commit 标记为完成；终止后会自动改回关闭。
+- `enable_task_lock`：任务锁，默认关闭。开启后，如果已有定时或手动检查任务正在运行，新的检查请求会直接拒绝执行，不会排队等待；插件重载时会自动终止当前运行任务并把任务锁改回关闭。
 - `max_saved_artifacts`：插件文件最大保存数量，默认 5。`logs/` 保留最新 5 个任务目录，`images/`、`errors/`、`task_logs/` 保留最新 5 个文件；设置为 0 表示不限制，不影响 `github_cache/`。
 - `restore_default_prompts`：恢复内置提示词，默认关闭。开启后插件下次加载时会把 `analysis_prompt`、`summary_prompt`、`tool_call_prompt` 和 `review_prompt` 恢复为内置默认值，然后自动改回关闭。
 
@@ -122,6 +123,25 @@ https://github.com/settings/tokens
 ```
 
 获取当前群聊的 `unified_msg_origin`。推送群聊列表也可以直接填写群号。
+
+```text
+/wtup_list
+```
+
+列出当前尚未标记为推送完成的 commit。列表会实时对比本地保存的 `last_commit_sha` 和 GitHub 最新提交，格式为每行一个短 SHA 加版本号，例如：
+
+```text
+未推送 commit 列表：
+0e0e9bc 2.56.0.43
+```
+
+仅插件后台 `admin_targets` 管理员列表中的用户可执行。
+
+```text
+/wtup_ok 0e0e9bc
+```
+
+手动把指定 commit 标记为已经推送完成。支持填写短 SHA 或完整 SHA；为了避免误操作回退进度，已有基线时只能标记 `/wtup_list` 当前未推送列表里的 commit。仅插件后台 `admin_targets` 管理员列表中的用户可执行。
 
 ```text
 /wtup_check
@@ -166,6 +186,8 @@ https://github.com/settings/tokens
 `model_concurrency` 控制同时进行的模型请求数量。默认 `1` 表示串行；设置为大于 `1` 时会并发分析多个分片，但不会按完成先后合并，最终仍按分片顺序整理报告。
 
 GitHub 请求失败会按 `github_max_retry_count` 重试，默认最多重试 4 次。重试只处理网络错误、GitHub 限流和 5xx 临时错误，等待时间依次为 1 分钟、2 分钟、4 分钟、8 分钟；权限错误、仓库或分支不存在等明确错误不会重试。重试等待期间也会检测 `terminate_running_task`，后台打开终止开关后会尽快停止等待并结束当前任务。
+
+任务锁用于避免同一时间重复启动多次更新分析。关闭时，插件仍会用内部互斥保证同一时间只执行一个检查，后来的检查会等待前一个检查结束；开启 `enable_task_lock` 后，后来的检查会直接返回“已有任务正在运行”，不会进入等待队列。插件重载或卸载时会默认写入终止信号，尽量让当前检查在最近的终止检查点退出，并把 `enable_task_lock` 自动改回关闭，避免重载后后台仍保持锁定状态。
 
 `enable_streaming_llm_call` 默认关闭，关闭时继续使用原有 `context.llm_generate` 非流式调用。开启后，插件会优先通过 AstrBot Provider 的 `text_chat_stream` 流式接口请求模型，并把流式片段聚合成完整响应再进入 JSON 解析、修复、重试和 token 统计流程。该开关适用于仅支持流式请求的服务；如果未配置 Provider ID 且无法定位可用流式 Provider，插件会记录 warning 并回退为非流式请求。
 
