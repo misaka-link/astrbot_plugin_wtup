@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 from wtup.diff_collector import DiffChunk, DiffSummary
 from wtup.analysis import TokenUsage
-from wtup.renderer import build_report_html, render_footer_note, render_plain_text, report_display_title
+from wtup.renderer import build_report_html, render_footer_note, render_plain_text, render_watermark, report_display_title
 
 
 class RendererFooterNoteTest(unittest.TestCase):
@@ -41,6 +41,54 @@ class RendererFooterNoteTest(unittest.TestCase):
 
     def test_footer_note_escapes_plain_text(self) -> None:
         self.assertEqual(render_footer_note("<script>x</script>"), "&lt;script&gt;x&lt;/script&gt;")
+
+    def test_render_watermark_skips_empty_text(self) -> None:
+        self.assertEqual(render_watermark(""), "")
+
+    def test_render_watermark_escapes_text_and_applies_options(self) -> None:
+        watermark_html = render_watermark("<测试>", opacity_percent=35, density="high")
+
+        self.assertIn("&lt;测试&gt;", watermark_html)
+        self.assertIn("opacity: 0.35", watermark_html)
+        self.assertIn("watermark-density-high", watermark_html)
+        self.assertNotIn("<测试>", watermark_html)
+
+    def test_build_report_html_injects_watermark(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "report.html"
+            template_path.write_text(
+                "<html><head><style>{{ style_css }}</style></head><body>{{ watermark_html }}</body></html>",
+                encoding="utf-8",
+            )
+            template_path.with_suffix(".css").write_text("", encoding="utf-8")
+            summary = DiffSummary(
+                base_sha="base123",
+                head_sha="head456",
+                compare_url="",
+                total_commits=1,
+                total_files=0,
+                additions=0,
+                deletions=0,
+                changed_files=0,
+                commits=[],
+                files=[],
+                chunks=[],
+            )
+            chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+
+            html = build_report_html(
+                template_path,
+                summary,
+                chunk,
+                {"summary": "摘要"},
+                watermark_text="测试水印",
+                watermark_opacity_percent=20,
+                watermark_density="low",
+            )
+
+            self.assertIn("测试水印", html)
+            self.assertIn("opacity: 0.20", html)
+            self.assertIn("watermark-density-low", html)
 
     def test_build_report_html_injects_split_css_file(self) -> None:
         with TemporaryDirectory() as temp_dir:

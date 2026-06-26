@@ -80,6 +80,9 @@ mode: commit
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`、`{analysis_model_chain}`、`{summary_model_chain}`、`{analysis_model_chain_name}`、`{summary_model_chain_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`；如果中途切换备用模型，模型变量会按实际请求链路输出，例如 `glm-5.1 -> gemini-3.5-flash`，`*_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
+- `watermark_text`：报告图片水印内容，默认空。内容为空时不会增加水印。
+- `watermark_opacity_percent`：水印透明度百分比，默认 8。范围 0 到 100，数字越大水印越明显。
+- `watermark_density`：水印密度，默认 `medium`。可选 `low`、`medium`、`high`，分别表示稀疏、默认和密集。
 - `github_token`：GitHub Personal Access Token，可选。
 - `github_max_retry_count`：GitHub 请求最大重试次数，默认 4。遇到网络错误、限流或 5xx 临时错误时按 1、2、4、8 分钟递增等待后重试。
 - `max_files_per_report`：每次模型请求最多文件数，默认 150。
@@ -162,6 +165,12 @@ https://github.com/settings/tokens
 ```
 
 强制分析最新 commit，并推送到后台配置的全部 `target_groups`；默认分析最新 1 个 commit，命令末尾同样可追加 1 到 5 的数量参数，例如 `/wtup_check 强制全部 2`。如果配置了 `analysis_file_groups`，也会向这些群上传分析日志。仅插件后台 `admin_targets` 管理员列表中的用户可执行。
+
+```text
+/wtup_watermark_test [临时水印内容]
+```
+
+生成一张水印预览图并发送到当前会话。仅插件后台 `admin_targets` 管理员列表中的用户可执行。命令不请求 GitHub、不调用模型，也不会写入后台配置；如果填写临时水印内容，只影响本次预览。未填写临时内容时使用后台 `watermark_text`，后台水印内容也为空时会提示不会显示水印。
 
 ## 模型请求拆分规则
 

@@ -473,6 +473,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(list_settings.admin_targets, ["123", "platform:private:user"])
         self.assertEqual(line_settings.admin_targets, ["123", "platform:private:user"])
 
+    def test_watermark_settings_are_loaded_and_normalized(self) -> None:
+        settings = load_config(
+            {
+                "watermark_text": " 测试水印 ",
+                "watermark_opacity_percent": 35,
+                "watermark_density": "密集",
+            }
+        )
+
+        self.assertEqual(settings.watermark_text, "测试水印")
+        self.assertEqual(settings.watermark_opacity_percent, 35)
+        self.assertEqual(settings.watermark_density, "high")
+
     def test_model_provider_config_items_are_grouped_first(self) -> None:
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))

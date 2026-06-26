@@ -39,6 +39,9 @@ def build_report_html(
     footer_note: str = "",
     report_label: str = "",
     token_usage: Any | None = None,
+    watermark_text: str = "",
+    watermark_opacity_percent: int = 8,
+    watermark_density: str = "medium",
 ) -> str:
     template = template_path.read_text(encoding="utf-8")
     style_css = load_template_css(template_path)
@@ -68,6 +71,11 @@ def build_report_html(
         "{{ footer_note }}": render_footer_note(footer_note),
         "{{ token_usage }}": html.escape(format_token_usage_text(token_usage)),
         "{{ footer_badge }}": html.escape(time.strftime("%Y-%m-%d %H:%M:%S")),
+        "{{ watermark_html }}": render_watermark(
+            watermark_text,
+            opacity_percent=watermark_opacity_percent,
+            density=watermark_density,
+        ),
     }
     for needle, value in replacements.items():
         template = template.replace(needle, value)
@@ -295,6 +303,29 @@ def render_file_table(files: list[dict[str, Any]]) -> str:
 def render_badges(items: list[str]) -> str:
     normalized = [str(item).strip() for item in items if str(item or "").strip()]
     return "".join(f'<span class="badge">{html.escape(item)}</span>' for item in normalized[:10])
+
+
+def render_watermark(text: str, *, opacity_percent: int = 8, density: str = "medium") -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    try:
+        percent = int(opacity_percent)
+    except (TypeError, ValueError):
+        percent = 8
+    percent = min(100, max(0, percent))
+    opacity = f"{percent / 100:.2f}"
+    normalized_density = str(density or "").strip().lower()
+    if normalized_density not in {"low", "medium", "high"}:
+        normalized_density = "medium"
+
+    escaped_text = html.escape(raw)
+    tiles = "".join(f'<span class="watermark-tile">{escaped_text}</span>' for _ in range(96))
+    return (
+        f'<div class="watermark-layer watermark-density-{normalized_density}" '
+        f'style="opacity: {opacity};" aria-hidden="true">{tiles}</div>'
+    )
 
 
 def render_footer_note(text: str) -> str:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -26,8 +27,9 @@ try:
         PluginConfig,
         load_config,
     )
-    from .wtup.diff_collector import short_sha
+    from .wtup.diff_collector import DiffChunk, DiffSummary, short_sha
     from .wtup.permissions import admin_target_allows_sender, normalize_user_id
+    from .wtup.renderer import build_report_html, render_report_image
     from .wtup.runtime import RuntimeState
     from .wtup.service import MAX_FORCE_COMMIT_COUNT, UpdateCheckService
     from .wtup.state_store import StateStore
@@ -45,8 +47,9 @@ except ImportError:
         PluginConfig,
         load_config,
     )
-    from wtup.diff_collector import short_sha
+    from wtup.diff_collector import DiffChunk, DiffSummary, short_sha
     from wtup.permissions import admin_target_allows_sender, normalize_user_id
+    from wtup.renderer import build_report_html, render_report_image
     from wtup.runtime import RuntimeState
     from wtup.service import MAX_FORCE_COMMIT_COUNT, UpdateCheckService
     from wtup.state_store import StateStore
@@ -587,6 +590,38 @@ class WTUpdatePlugin(Star):
                 return
         yield event.plain_result(str(result.get("message") or "检查完成。"))
 
+    @filter.command("wtup_watermark_test")
+    async def wtup_watermark_test(self, event: AstrMessageEvent):
+        await self._react_to_command_received(event)
+        if not _event_is_configured_admin(event, self.settings.admin_targets):
+            yield event.plain_result("权限不足：/wtup_watermark_test 只能由插件后台“管理员列表”中的用户执行。")
+            return
+
+        args = _command_args(str(getattr(event, "message_str", "") or ""), "wtup_watermark_test")
+        temporary_text = " ".join(args).strip()
+        watermark_text = temporary_text or self.settings.watermark_text
+        if not watermark_text:
+            yield event.plain_result(
+                "当前水印内容为空，报告不会显示水印。\n"
+                "可使用 /wtup_watermark_test 测试水印 临时预览。"
+            )
+            return
+
+        try:
+            image_path = await self._render_watermark_test_image(watermark_text)
+        except Exception as exc:
+            logger.warning("[%s] 水印测试图生成失败: %s", PLUGIN_NAME, exc, exc_info=True)
+            yield event.plain_result(f"水印测试图生成失败：{exc}")
+            return
+
+        if image_path is None:
+            yield event.plain_result("水印测试图生成失败：html_render 不可用或返回了无效图片。")
+            return
+
+        asyncio.create_task(self._cleanup_watermark_test_path_later(image_path))
+        await self._react_to_command_done(event)
+        yield event.image_result(str(image_path))
+
     async def _react_to_command(self, event: AstrMessageEvent, emoji_id: str, *, set_reaction: bool = True) -> bool:
         message_id = _get_event_message_id(event)
         if not message_id:
@@ -619,6 +654,73 @@ class WTUpdatePlugin(Star):
 
     async def _react_to_command_done(self, event: AstrMessageEvent) -> bool:
         return await self._react_to_command(event, COMMAND_DONE_EMOJI_ID)
+
+    async def _render_watermark_test_image(self, watermark_text: str) -> Path | None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="wtup_watermark_test.", dir="/tmp"))
+        try:
+            summary = DiffSummary(
+                base_sha="0123456789abcdef",
+                head_sha="fedcba9876543210",
+                compare_url="https://github.com/gszabi99/War-Thunder-Datamine/compare/test",
+                total_commits=1,
+                total_files=3,
+                additions=12,
+                deletions=4,
+                changed_files=3,
+                commits=[],
+                files=[],
+                chunks=[],
+                base_version="2.56.0.42",
+                head_version="2.56.0.43",
+            )
+            chunk = DiffChunk(index=1, total=1, files=[], patch_chars=1200)
+            analysis = {
+                "report_title": "2.56.0.42->2.56.0.43",
+                "summary": "水印预览样例，不会请求 GitHub 或模型。",
+                "importance": "中",
+                "tags": ["水印测试", "预览"],
+                "update_sections": [
+                    {
+                        "title": "水印测试",
+                        "items": [
+                            {"text": "这是一张本地生成的水印预览图，用于检查后台水印设置。", "children": []},
+                            {"text": "临时命令文本只影响本次预览，不会写入后台配置。", "children": []},
+                        ],
+                    }
+                ],
+                "ai_analysis": {
+                    "changed_content": ["检查水印内容、透明度和密度是否符合预期。"],
+                    "player_impact": ["真实报告会使用同一套模板渲染水印。"],
+                    "uncertainties": [],
+                    "recommendation": "如果水印过浅或过密，可在后台调整透明度百分比和密度。",
+                },
+            }
+            html_text = build_report_html(
+                self.template_path,
+                summary,
+                chunk,
+                analysis,
+                footer_note=self.settings.footer_note,
+                report_label="水印测试",
+                watermark_text=watermark_text,
+                watermark_opacity_percent=self.settings.watermark_opacity_percent,
+                watermark_density=self.settings.watermark_density,
+            )
+            image_path = await render_report_image(self, html_text, temp_dir)
+            if image_path is None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return image_path
+        except Exception:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+    async def _cleanup_watermark_test_path_later(self, image_path: Path, *, delay_seconds: int = 30) -> None:
+        await asyncio.sleep(delay_seconds)
+        try:
+            image_path.unlink(missing_ok=True)
+            image_path.parent.rmdir()
+        except Exception as exc:
+            logger.warning("[%s] 清理水印测试临时文件失败: %s", PLUGIN_NAME, exc)
 
     async def _monitor_loop(self):
         await asyncio.sleep(5)

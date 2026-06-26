@@ -194,6 +194,29 @@
     "hint": "显示在报告图片左下角，支持多行和简单 Markdown 链接，例如 [文字](https://example.com)。",
     "default": "[gszabi99/War-Thunder-Datamine](https://github.com/gszabi99/War-Thunder-Datamine)"
   },
+  "watermark_text": {
+    "type": "string",
+    "description": "水印内容",
+    "hint": "显示在报告图片中的平铺水印。留空则不增加水印。",
+    "default": ""
+  },
+  "watermark_opacity_percent": {
+    "type": "int",
+    "description": "水印透明度百分比",
+    "hint": "范围 0 到 100，数字越大水印越明显。默认 8。",
+    "default": 8
+  },
+  "watermark_density": {
+    "type": "string",
+    "description": "水印密度",
+    "hint": "low=稀疏，medium=默认，high=密集。",
+    "options": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "default": "medium"
+  },
   "github_token": {
     "type": "string",
     "description": "GitHub Personal Access Token",

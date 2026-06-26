@@ -689,6 +689,9 @@ class UpdateCheckService:
                     footer_note=self.settings.footer_note,
                     report_label=display_name,
                     token_usage=report_token_usage,
+                    watermark_text=self.settings.watermark_text,
+                    watermark_opacity_percent=self.settings.watermark_opacity_percent,
+                    watermark_density=self.settings.watermark_density,
                 )
                 image_path = await render_report_image(self.render_host, html_text, self.image_dir)
                 fallback_text = render_plain_text(summary, report_chunk, report_analysis, report_label=display_name)

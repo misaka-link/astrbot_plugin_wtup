@@ -76,9 +76,46 @@ body {
   z-index: 0;
 }
 
-.card > *:not(.deco-image):not(.miku-float) {
+.card > *:not(.watermark-layer):not(.deco-image):not(.miku-float) {
   position: relative;
   z-index: 1;
+}
+
+.watermark-layer {
+  position: absolute;
+  inset: -80px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 52px 34px;
+  align-content: start;
+  justify-items: center;
+  overflow: hidden;
+  color: #1d6f6a;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+.watermark-density-low {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 86px 58px;
+}
+
+.watermark-density-high {
+  grid-template-columns: repeat(5, 1fr);
+  gap: 34px 18px;
+}
+
+.watermark-tile {
+  display: inline-block;
+  min-width: 210px;
+  text-align: center;
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 900;
+  letter-spacing: 0;
+  white-space: nowrap;
+  transform: rotate(-24deg);
 }
 
 .header {

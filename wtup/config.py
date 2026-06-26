@@ -38,6 +38,9 @@ DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
     "分析模型:{analysis_model}\n"
     "总结模型:{summary_model}"
 )
+DEFAULT_WATERMARK_OPACITY_PERCENT = 8
+DEFAULT_WATERMARK_DENSITY = "medium"
+WATERMARK_DENSITIES = {"low", "medium", "high"}
 DEFAULT_TOOL_CALL_PROMPT = (
     "当当前分片不足以判断关联挂载、完整参数或同名配置时，可以通过 tool_calls 申请补充上下文。"
     "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch、read_changed_file、search_changed_files、list_related_files。"
@@ -105,6 +108,9 @@ class PluginConfig:
     enable_task_lock: bool = field(default=False, compare=False)
     max_saved_artifacts: int = 5
     footer_note: str = DEFAULT_FOOTER_NOTE
+    watermark_text: str = field(default="", compare=False)
+    watermark_opacity_percent: int = field(default=DEFAULT_WATERMARK_OPACITY_PERCENT, compare=False)
+    watermark_density: str = field(default=DEFAULT_WATERMARK_DENSITY, compare=False)
     backup_provider_ids: list[str] = field(default_factory=list)
     admin_targets: list[str] = field(default_factory=list)
     model_error_recorder: Callable[[str, BaseException | str, dict[str, Any]], None] | None = field(
@@ -240,6 +246,23 @@ def normalize_review_mode(value: Any) -> str:
     return normalized if normalized in REVIEW_MODES else REVIEW_MODE_AUTO
 
 
+def normalize_watermark_density(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "低": "low",
+        "稀疏": "low",
+        "low": "low",
+        "中": "medium",
+        "默认": "medium",
+        "medium": "medium",
+        "高": "high",
+        "密集": "high",
+        "high": "high",
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in WATERMARK_DENSITIES else DEFAULT_WATERMARK_DENSITY
+
+
 def split_lines(value: Any) -> list[str]:
     if value is None:
         return []
@@ -289,6 +312,13 @@ def load_config(config: Any) -> PluginConfig:
         ),
         enable_pre_summary_report=as_bool(config_get(config, "enable_pre_summary_report", False)),
         footer_note=str(config_get(config, "footer_note", DEFAULT_FOOTER_NOTE) or DEFAULT_FOOTER_NOTE),
+        watermark_text=str(config_get(config, "watermark_text", "") or "").strip(),
+        watermark_opacity_percent=as_int(
+            config_get(config, "watermark_opacity_percent", DEFAULT_WATERMARK_OPACITY_PERCENT),
+            DEFAULT_WATERMARK_OPACITY_PERCENT,
+            minimum=0,
+        ),
+        watermark_density=normalize_watermark_density(config_get(config, "watermark_density", DEFAULT_WATERMARK_DENSITY)),
         target_groups=split_lines(config_get(config, "target_groups", "")),
         admin_targets=split_lines(config_get(config, "admin_targets", "")),
         analysis_file_groups=split_lines(config_get(config, "analysis_file_groups", "")),
