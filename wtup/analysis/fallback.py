@@ -17,6 +17,11 @@ def fallback_analysis(reason: str, *, raw_text: str = "") -> dict[str, Any]:
                 "items": [{"text": item_text, "children": []}],
             }
         ],
+        "bulk_repeat_content": {
+            "batch": [],
+            "repeated": [],
+            "needs_verification": [{"text": item_text, "children": []}],
+        },
         "highlights": [item_text],
         "player_impact": [],
         "risks": [reason],

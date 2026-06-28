@@ -172,6 +172,55 @@ class RendererFooterNoteTest(unittest.TestCase):
         self.assertNotIn("Source:", text)
         self.assertNotIn("https://github.com/example/repo/compare/base...head", text)
 
+    def test_bulk_repeat_content_renders_before_ai_analysis(self) -> None:
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=0,
+            additions=0,
+            deletions=0,
+            changed_files=0,
+            commits=[],
+            files=[],
+            chunks=[],
+        )
+        chunk = DiffChunk(index=1, total=1, files=[], patch_chars=0)
+        analysis = {
+            "summary": "摘要",
+            "update_sections": [{"title": "参数调整", "items": [{"text": "主条目", "children": []}]}],
+            "bulk_repeat_content": {
+                "batch": [{"text": "批量修改", "children": []}],
+                "repeated": [],
+                "needs_verification": [{"text": "需验证内容", "children": []}],
+            },
+            "ai_analysis": {
+                "changed_content": ["AI 改动"],
+                "player_impact": [],
+                "uncertainties": [],
+                "recommendation": "",
+            },
+        }
+
+        text = render_plain_text(summary, chunk, analysis)
+
+        self.assertLess(text.index("批量重复内容:"), text.index("AI 分析:"))
+        self.assertIn("批量修改", text)
+
+        with TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "report.html"
+            template_path.write_text(
+                "<main>{{ summary_html }}{{ article_html }}</main>",
+                encoding="utf-8",
+            )
+            template_path.with_suffix(".css").write_text("", encoding="utf-8")
+
+            html = build_report_html(template_path, summary, chunk, analysis)
+
+        self.assertLess(html.index("批量重复内容"), html.index("AI 分析"))
+        self.assertIn("需验证内容", html)
+
 
 if __name__ == "__main__":
     unittest.main()

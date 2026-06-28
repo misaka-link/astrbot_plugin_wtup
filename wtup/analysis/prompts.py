@@ -103,6 +103,17 @@ def _analysis_json_schema_text() -> str:
       ]
     }
   ],
+  "bulk_repeat_content": {
+    "batch": [
+      {"text": "批量修改内容摘要", "source_ids": ["C001-001"], "children": []}
+    ],
+    "repeated": [
+      {"text": "重复或同类重复内容摘要", "source_ids": ["C001-002"], "children": []}
+    ],
+    "needs_verification": [
+      {"text": "批量但含义不明确、需要验证的内容", "source_ids": ["C001-003"], "children": []}
+    ]
+  },
   "ai_analysis": {
     "changed_content": ["AI 分析出的实际改动内容"],
     "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
@@ -150,7 +161,7 @@ JSON 字段如下：
 6. 优先解释数据变化可能代表什么，不要只复述文件名。
 7. 如果信息不足，要明确写“不确定”，不要编造。
 8. update_sections 是完整更新条目，不受 AI 分析摘要数量限制；changed_content、player_impact、uncertainties 每个数组最多 50 条，每条尽量短。
-9. 下面的“变更覆盖点名册”是必须覆盖的原始变更编号；每个编号都必须出现在某条 update_sections.items 或 children 的 source_ids 中。
+9. 下面的“变更覆盖点名册”是必须覆盖的原始变更编号；每个编号都必须出现在某条 update_sections.items、children 或 bulk_repeat_content 条目的 source_ids 中。
 10. 一个报告条目可以覆盖多个 source_ids，但不得编造点名册不存在的编号；如果某个编号无法解释，也要写成需复核条目并带上该 source_ids。
 11. {NO_RAW_DIFF_SUMMARY_RULE}
 12. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加 Part、分片、说明文字或其他内容。
@@ -158,6 +169,8 @@ JSON 字段如下：
 14. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 15. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 16. 当前是内部模型请求第 {chunk.index}/{chunk.total} 批；该信息只用于你理解输入范围，最终报告会由程序合并，不要输出批次信息。
+17. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content：batch 写大规模同类机械修改，repeated 写重复或高度相似内容，needs_verification 写批量但含义不明确、需要游戏内或人工验证的内容。
+18. bulk_repeat_content 会显示在报告更新内容下方、AI 分析上方；这里的条目也必须保留 source_ids。不要把同一 source_id 同时放入 update_sections 和 bulk_repeat_content，除非确实需要主条目解释且批量板块做补充。
 {_tool_protocol_text(settings, remaining_rounds=getattr(settings, "max_tool_call_rounds", 0))}
 {_dynamic_context_protocol_text(settings, remaining_rounds=getattr(settings, "max_dynamic_context_rounds", 0))}
 
@@ -195,6 +208,7 @@ JSON 字段如下：
 4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 5. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 6. {NO_RAW_DIFF_SUMMARY_RULE}
+7. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content；这里的条目也必须保留 source_ids。
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 当前分片: {chunk.index}/{chunk.total}
@@ -248,6 +262,7 @@ JSON 字段如下：
 6. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 7. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
 8. {NO_RAW_DIFF_SUMMARY_RULE}
+9. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content；这里的条目也必须保留 source_ids。
 {_dynamic_context_protocol_text(settings, remaining_rounds=remaining_rounds)}
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
@@ -301,6 +316,7 @@ def build_tool_refinement_prompt(
 4. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 5. 如果上下文仍不足，只能写“本次 diff 未提供足够信息”。
 6. {NO_RAW_DIFF_SUMMARY_RULE}
+7. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content；这里的条目也必须保留 source_ids。
 {_tool_protocol_text(settings, remaining_rounds=remaining_rounds)}
 {_dynamic_context_protocol_text(settings, remaining_rounds=getattr(settings, "max_dynamic_context_rounds", 0))}
 
@@ -340,32 +356,7 @@ def build_refinement_prompt(settings: PluginConfig, summary: DiffSummary, merged
 7. 不确定的信息写入 uncertainties，不要编造。
 
 JSON 字段如下：
-{{
-  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
-  "summary": "一句话总结本次更新中最重要的变化",
-  "importance": "低/中/高",
-  "update_sections": [
-    {{
-      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
-      "items": [
-        {{
-          "text": "条目内容",
-          "source_ids": ["覆盖的变更编号，例如 C001-001"],
-          "children": [
-            {{"text": "子条目内容", "source_ids": ["C001-002"], "children": []}}
-          ]
-        }}
-      ]
-    }}
-  ],
-  "ai_analysis": {{
-    "changed_content": ["AI 分析出的实际改动内容"],
-    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
-    "uncertainties": ["不确定点、需要继续观察的地方"],
-    "recommendation": "是否建议玩家关注/更新，以及原因"
-  }},
-  "tags": ["标签1", "标签2"]
-}}
+{_analysis_json_schema_text()}
 
 要求：
 1. 用中文。
@@ -373,13 +364,15 @@ JSON 字段如下：
 3. 去重重复条目，合并含义相近的条目。
 4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
 5. update_sections 使用中文标题，并保留条目层级。
-6. 必须保留并合并 update_sections.items 和 children 中已有的 source_ids，不能删除、改写或编造 source_ids。
+6. 必须保留并合并 update_sections.items、children 和 bulk_repeat_content 中已有的 source_ids，不能删除、改写或编造 source_ids。
 7. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 8. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 9. update_sections 是完整更新条目，不受 AI 分析摘要数量限制；changed_content、player_impact、uncertainties 每个数组最多 50 条，每条尽量短。
 10. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
 11. 如果初步合并 JSON 中有分析失败或信息不足的内容，要保留到 uncertainties。
 12. {NO_RAW_DIFF_SUMMARY_RULE}
+13. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content：batch 写大规模同类机械修改，repeated 写重复或高度相似内容，needs_verification 写批量但含义不明确、需要游戏内或人工验证的内容。
+14. bulk_repeat_content 会显示在报告更新内容下方、AI 分析上方；这里的条目也必须保留 source_ids。
 
 提交范围: {summary.base_sha[:7] or "unknown"}...{summary.head_sha[:7] or "unknown"}
 提交数: {summary.total_commits}
@@ -419,32 +412,7 @@ def build_chunk_refinement_prompt(
 7. 不确定的信息写入 uncertainties，不要编造。
 
 JSON 字段如下：
-{{
-  "report_title": "更新标题，必须是 版本号->版本号，例如 2.56.0.38->2.56.0.39；无法判断版本号时留空",
-  "summary": "一句话总结本次更新中最重要的变化",
-  "importance": "低/中/高",
-  "update_sections": [
-    {{
-      "title": "新增载具/新增文本/参数调整/经济调整/其他变化",
-      "items": [
-        {{
-          "text": "条目内容",
-          "source_ids": ["覆盖的变更编号，例如 C001-001"],
-          "children": [
-            {{"text": "子条目内容", "source_ids": ["C001-002"], "children": []}}
-          ]
-        }}
-      ]
-    }}
-  ],
-  "ai_analysis": {{
-    "changed_content": ["AI 分析出的实际改动内容"],
-    "player_impact": ["对玩家、载具、经济、任务、地图或战斗体验的可能影响"],
-    "uncertainties": ["不确定点、需要继续观察的地方"],
-    "recommendation": "是否建议玩家关注/更新，以及原因"
-  }},
-  "tags": ["标签1", "标签2"]
-}}
+{_analysis_json_schema_text()}
 
 要求：
 1. 用中文。
@@ -452,13 +420,15 @@ JSON 字段如下：
 3. 去重重复条目，合并含义相近的条目。
 4. 保留重要的载具、武器、经济、任务、地图、文本等改动。
 5. update_sections 使用中文标题，并保留条目层级。
-6. 必须保留并合并 update_sections.items 和 children 中已有的 source_ids，不能删除、改写或编造 source_ids。
+6. 必须保留并合并 update_sections.items、children 和 bulk_repeat_content 中已有的 source_ids，不能删除、改写或编造 source_ids。
 7. 不要在 report_title、summary、update_sections.title、正文条目或 uncertainties 中写 Part、分片、第几批、本批 diff、当前分片等分页信息。
 8. 如果上下文不足，只能写“本次 diff 未提供足够信息”，不要写“本批 diff 未出现/当前分片未出现”。
 9. update_sections 是完整更新条目，不受 AI 分析摘要数量限制；changed_content、player_impact、uncertainties 每个数组最多 50 条，每条尽量短。
 10. report_title 只能写版本号到版本号，例如 2.56.0.38->2.56.0.39，不要添加其他说明文字。
 11. 程序合并失败原因和分片分析失败信息必须保留到 uncertainties。
 12. {NO_RAW_DIFF_SUMMARY_RULE}
+13. 将批量重复内容从 update_sections 中剔出来，放入 bulk_repeat_content：batch 写大规模同类机械修改，repeated 写重复或高度相似内容，needs_verification 写批量但含义不明确、需要游戏内或人工验证的内容。
+14. bulk_repeat_content 会显示在报告更新内容下方、AI 分析上方；这里的条目也必须保留 source_ids。
 
 分片分析数据:
 {chunk_json}

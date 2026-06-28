@@ -309,6 +309,38 @@ body {
   word-break: break-word;
 }
 
+.bulk-repeat-content {
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(86, 182, 214, 0.24);
+  border-radius: 12px;
+  background: rgba(247, 252, 255, 0.72);
+}
+
+.bulk-repeat-content h2 {
+  margin: 0 0 12px;
+  color: #2f7d95;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 900;
+}
+
+.bulk-repeat-group {
+  margin: 0 0 12px;
+}
+
+.bulk-repeat-group:last-child {
+  margin-bottom: 0;
+}
+
+.bulk-repeat-group h3 {
+  margin: 0 0 8px;
+  color: #376f85;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 820;
+}
+
 .section-title {
   margin: 0 0 10px;
   color: #2a9d95;

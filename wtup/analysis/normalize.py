@@ -10,8 +10,17 @@ from .fallback import fallback_analysis
 AI_ANALYSIS_ITEM_LIMIT = 50
 UPDATE_SECTION_LIMIT = 100
 UPDATE_ITEM_LIMIT = 500
+BULK_REPEAT_SECTION_LIMIT = 3
+BULK_REPEAT_ITEM_LIMIT = 300
 RAW_DIFF_HUNK_RE = re.compile(r"@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@")
 RAW_DIFF_LABELS = ("删除/旧值", "新增/新值")
+COMPOUND_DIFF_TOKEN_RE = re.compile(r'^\s*(?:[{}\[\],]|"\w+"\s*:\s*[{}\[\]])')
+BULK_REPEAT_KEYS = ("batch", "repeated", "needs_verification")
+BULK_REPEAT_TITLES = {
+    "batch": "批量修改",
+    "repeated": "重复内容",
+    "needs_verification": "需验证内容",
+}
 
 
 def safe_normalize_analysis(text: str) -> dict[str, Any]:
@@ -50,6 +59,7 @@ def normalize_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         "summary": clean_pagination_text(payload.get("summary")) or "本次更新未给出摘要。",
         "importance": normalize_importance(payload.get("importance")),
         "update_sections": normalize_update_sections(payload.get("update_sections")),
+        "bulk_repeat_content": normalize_bulk_repeat_content(payload.get("bulk_repeat_content")),
         "ai_analysis": ai_analysis,
         "highlights": normalize_list(payload.get("highlights")),
         "player_impact": ai_analysis["player_impact"],
@@ -73,7 +83,11 @@ def normalize_list(value: Any, *, limit: int = 5) -> list[str]:
         items = [value]
     else:
         items = []
-    result = [clean_pagination_text(item) for item in items if clean_pagination_text(item)]
+    result = []
+    for item in items:
+        text = clean_pagination_text(item)
+        if text and not is_compound_raw_diff_summary(text):
+            result.append(text)
     return result[:limit]
 
 def normalize_ai_analysis(payload: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +137,16 @@ def normalize_update_sections(
             break
     return sections
 
+def normalize_bulk_repeat_content(value: Any) -> dict[str, list[dict[str, Any]]]:
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for key in BULK_REPEAT_KEYS:
+        raw_value = source.get(key)
+        if raw_value is None:
+            raw_value = source.get(BULK_REPEAT_TITLES[key])
+        result[key] = normalize_update_items(raw_value, limit=BULK_REPEAT_ITEM_LIMIT)
+    return result
+
 def normalize_update_items(value: Any, *, limit: int = 20, depth: int = 0) -> list[dict[str, Any]]:
     if depth > 4:
         return []
@@ -143,6 +167,8 @@ def normalize_update_items(value: Any, *, limit: int = 20, depth: int = 0) -> li
             text = clean_pagination_text(item)
             children = []
             source_ids = []
+        if is_compound_raw_diff_summary(text):
+            continue
         if text:
             normalized_item = {"text": text, "children": children}
             if source_ids:
@@ -310,9 +336,24 @@ def clean_raw_diff_summary_text(value: Any) -> str:
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) > 1:
-        cleaned_lines = unique_texts(_clean_raw_diff_summary_line(line) for line in lines)
+        cleaned_lines = unique_texts(
+            cleaned for line in lines if (cleaned := _clean_raw_diff_summary_line(line))
+        )
         return "；".join(cleaned_lines)
     return _clean_raw_diff_summary_line(text)
+
+def is_compound_raw_diff_summary(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if not _looks_like_raw_diff_summary(text) and " | " not in text:
+        return False
+    removed = _raw_diff_label_value(text, "删除/旧值")
+    added = _raw_diff_label_value(text, "新增/新值")
+    candidates = [part for part in (removed, added) if part]
+    if not candidates:
+        candidates = [_strip_diff_summary_prefix(_strip_raw_diff_markers(text))]
+    return any(_looks_like_compound_diff_value(candidate) for candidate in candidates)
 
 def _looks_like_raw_diff_summary(text: str) -> bool:
     if not any(f"{label}:" in text for label in RAW_DIFF_LABELS):
@@ -321,6 +362,8 @@ def _looks_like_raw_diff_summary(text: str) -> bool:
 
 def _clean_raw_diff_summary_line(line: str) -> str:
     raw = re.sub(r"^\s*[-*]\s+", "", str(line or "").strip())
+    if is_compound_raw_diff_summary(raw):
+        return ""
     removed = _raw_diff_label_value(raw, "删除/旧值")
     added = _raw_diff_label_value(raw, "新增/新值")
     path = _raw_diff_path(raw)
@@ -377,6 +420,29 @@ def _clean_raw_diff_value(value: str) -> str:
     text = _strip_raw_diff_markers(value)
     parts = [part.strip().rstrip(",，;； ") for part in text.split(" | ")]
     return " | ".join(part for part in parts if part)
+
+def _looks_like_compound_diff_value(value: str) -> bool:
+    parts = [part.strip() for part in str(value or "").split(" | ") if part.strip()]
+    if len(parts) < 3:
+        return False
+    structural_parts = 0
+    for part in parts:
+        if COMPOUND_DIFF_TOKEN_RE.search(part) or part.rstrip().endswith(("{", "}", "[", "]")):
+            structural_parts += 1
+    if structural_parts:
+        return True
+    return parts[0] in {"{", "}", "[", "]"} or parts[-1] in {"{", "}", "[", "]"}
+
+def _strip_diff_summary_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    for marker in ("新增 ", "删除 "):
+        index = text.find(marker)
+        if index >= 0:
+            return text[index + len(marker) :].strip()
+    arrow_index = text.find("->")
+    if arrow_index >= 0:
+        return text[arrow_index + 2 :].strip()
+    return text
 
 def _strip_raw_diff_markers(value: str) -> str:
     text = RAW_DIFF_HUNK_RE.sub("", str(value or ""))

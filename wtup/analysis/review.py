@@ -234,7 +234,7 @@ def _should_upgrade_to_quality(settings: PluginConfig, analysis: dict[str, Any])
         return True
     if getattr(settings, "review_upgrade_on_context_failure", True):
         text = json.dumps(analysis, ensure_ascii=False)
-        if any(needle in text for needle in ("动态补充", "补充失败", "无法读取", "需复核的未覆盖变更")):
+        if any(needle in text for needle in ("动态补充", "补充失败", "无法读取", "需复核的未覆盖变更", "需验证内容", "needs_verification")):
             return True
     return False
 

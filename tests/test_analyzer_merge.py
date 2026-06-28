@@ -219,6 +219,20 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertEqual(len(parsed["ai_analysis"]["player_impact"]), 25)
         self.assertEqual(len(parsed["ai_analysis"]["uncertainties"]), 25)
 
+    def test_model_json_normalization_keeps_bulk_repeat_content(self) -> None:
+        payload = analysis("参数调整", "主条目")
+        payload["bulk_repeat_content"] = {
+            "batch": [{"text": "多辆载具同类参数批量调整", "source_ids": ["C001-001"], "children": []}],
+            "repeated": [{"text": "重复本地化键值变更", "source_ids": ["C001-002"], "children": []}],
+            "needs_verification": [{"text": "批量经济参数需验证", "source_ids": ["C001-003"], "children": []}],
+        }
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        self.assertEqual(parsed["bulk_repeat_content"]["batch"][0]["text"], "多辆载具同类参数批量调整")
+        self.assertEqual(parsed["bulk_repeat_content"]["repeated"][0]["source_ids"], ["C001-002"])
+        self.assertEqual(parsed["bulk_repeat_content"]["needs_verification"][0]["text"], "批量经济参数需验证")
+
     def test_merge_keeps_more_ai_summary_items(self) -> None:
         summary = make_summary()
         payload = analysis("参数调整", "初次分析")
@@ -249,6 +263,30 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertEqual(merged["ai_analysis"]["changed_content"][0], "改动摘要 0")
         self.assertEqual(merged["ai_analysis"]["changed_content"][-1], "改动摘要 39")
 
+    def test_merge_preserves_bulk_repeat_content(self) -> None:
+        summary = make_summary()
+        first = analysis("参数调整", "第一项")
+        first["bulk_repeat_content"] = {
+            "batch": [{"text": "批量修改 A", "source_ids": ["C001-001"], "children": []}],
+            "repeated": [],
+            "needs_verification": [],
+        }
+        second = analysis("参数调整", "第二项")
+        second["bulk_repeat_content"] = {
+            "batch": [{"text": "批量修改 A", "source_ids": ["C002-001"], "children": []}],
+            "repeated": [{"text": "重复内容 B", "source_ids": ["C002-002"], "children": []}],
+            "needs_verification": [],
+        }
+
+        merged = merge_chunk_analyses(
+            summary,
+            summary.chunks[:2],
+            [ChunkAnalysis(1, 2, first), ChunkAnalysis(2, 2, second)],
+        )
+
+        self.assertEqual(merged["bulk_repeat_content"]["batch"][0]["source_ids"], ["C001-001", "C002-001"])
+        self.assertEqual(merged["bulk_repeat_content"]["repeated"][0]["text"], "重复内容 B")
+
     def test_change_manifest_assigns_stable_source_ids(self) -> None:
         summary = make_summary()
 
@@ -276,7 +314,8 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertEqual(covered["coverage"]["missing"], 1)
         self.assertIn("C001-001", collect_source_ids(covered))
         titles = [section["title"] for section in covered["update_sections"]]
-        self.assertIn("需复核的未覆盖变更", titles)
+        self.assertNotIn("需复核的未覆盖变更", titles)
+        self.assertEqual(covered["bulk_repeat_content"]["needs_verification"][0]["source_ids"], ["C001-001"])
 
     def test_coverage_checker_compacts_repeated_uncovered_diff_entries(self) -> None:
         patch = """@@ -42303,7 +42303,7 @@
@@ -312,13 +351,7 @@ class AnalyzerMergeTest(unittest.TestCase):
 
         covered = enforce_change_coverage(summary, summary.chunks, payload)
 
-        review_sections = [
-            section
-            for section in covered["update_sections"]
-            if section["title"].startswith("需复核的未覆盖变更")
-        ]
-        self.assertEqual(len(review_sections), 1)
-        items = review_sections[0]["items"]
+        items = covered["bulk_repeat_content"]["repeated"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["source_ids"], ["C001-001", "C001-002"])
         self.assertIn("2 处同类未覆盖变更", items[0]["text"])
@@ -329,6 +362,62 @@ class AnalyzerMergeTest(unittest.TestCase):
         self.assertNotIn("@@", items[0]["text"])
         self.assertNotIn("删除/旧值", items[0]["text"])
         self.assertNotIn("新增/新值", items[0]["text"])
+
+    def test_change_manifest_filters_compound_object_diff_entries(self) -> None:
+        patch = """@@ -10,0 +10,11 @@
++{
++  "damageType": "genericLongRod"
++  "fire": 0.3
++  "expl": 0.7
++}
+"""
+        files = [
+            {
+                "filename": "aces.vromfs.bin_u/gamedata/units/tankmodels/germ_sdkfz_234_2.blkx",
+                "status": "modified",
+                "additions": 5,
+                "deletions": 0,
+                "patch": patch,
+            }
+        ]
+        summary = DiffSummary(
+            base_sha="base123",
+            head_sha="head456",
+            compare_url="",
+            total_commits=1,
+            total_files=1,
+            additions=5,
+            deletions=0,
+            changed_files=1,
+            commits=[],
+            files=files,
+            chunks=[DiffChunk(index=1, total=1, files=files, patch_chars=len(patch))],
+        )
+
+        manifest = build_change_manifest(summary, summary.chunks[0])
+        covered = enforce_change_coverage(summary, summary.chunks, analysis("参数调整", "模型只写了概括"))
+
+        self.assertEqual(manifest, [])
+        self.assertEqual(covered["coverage"], {})
+        self.assertNotIn(
+            "需复核的未覆盖变更",
+            [section["title"] for section in covered["update_sections"]],
+        )
+
+    def test_normalization_drops_compound_raw_diff_summary_copied_by_model(self) -> None:
+        payload = analysis(
+            "需复核的未覆盖变更",
+            'aces.vromfs.bin_u/gamedata/units/tankmodels/germ_sdkfz_234_2.blkx: 新增 { | "damageType": "genericLongRod" | "fire": 0.3 | "expl": 0.7 | ...，需复核具体影响。',
+        )
+        payload["update_sections"][0]["items"][0]["source_ids"] = ["C001-001"]
+        payload["ai_analysis"]["changed_content"] = [
+            'aces.vromfs.bin_u/gamedata/units/tankmodels/germ_sdkfz_234_2.blkx: 新增 { | "damageType": "genericLongRod" | "fire": 0.3 | "expl": 0.7 | ...，需复核具体影响。'
+        ]
+
+        parsed = safe_normalize_analysis(json_response(payload))
+
+        self.assertEqual(parsed["update_sections"], [])
+        self.assertEqual(parsed["ai_analysis"]["changed_content"], [])
 
     def test_normalization_filters_raw_diff_summary_copied_by_model(self) -> None:
         payload = analysis(

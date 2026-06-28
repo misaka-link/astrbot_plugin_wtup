@@ -21,6 +21,11 @@ from .token_usage import format_token_usage_text
 
 
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+BULK_REPEAT_TITLES = {
+    "batch": "批量修改",
+    "repeated": "重复内容",
+    "needs_verification": "需验证内容",
+}
 
 RENDER_OPTIONS = {
     "width": 1280,
@@ -135,6 +140,14 @@ def render_plain_text(
         lines.extend(render_plain_update_items(section["items"], indent=0))
         lines.append("")
 
+    bulk_repeat_content = normalized_bulk_repeat_content_for_render(analysis)
+    if bulk_repeat_content:
+        lines.append("批量重复内容:")
+        for title, items in bulk_repeat_content:
+            lines.append(f"{title}:")
+            lines.extend(render_plain_update_items(items, indent=0))
+        lines.append("")
+
     ai_analysis = analysis.get("ai_analysis") if isinstance(analysis.get("ai_analysis"), dict) else {}
     lines.append("AI 分析:")
     for title, values in (
@@ -187,6 +200,9 @@ def render_update_content(title: str, subtitle: str, analysis: dict[str, Any]) -
         parts.append(f'<h3>{html.escape(section["title"])}</h3>')
         parts.append(render_update_items(section["items"]))
         parts.append("</section>")
+    bulk_html = render_bulk_repeat_content(analysis)
+    if bulk_html:
+        parts.append(bulk_html)
     parts.append("</div>")
     return "".join(parts)
 
@@ -212,6 +228,31 @@ def normalized_update_sections_for_render(analysis: dict[str, Any]) -> list[dict
     if highlights:
         return [{"title": "更新内容", "items": highlights}]
     return [{"title": "更新内容", "items": [{"text": "本次更新没有可展示的更新条目。", "children": []}]}]
+
+def normalized_bulk_repeat_content_for_render(analysis: dict[str, Any]) -> list[tuple[str, list[dict[str, Any]]]]:
+    content = analysis.get("bulk_repeat_content") if isinstance(analysis.get("bulk_repeat_content"), dict) else {}
+    result: list[tuple[str, list[dict[str, Any]]]] = []
+    for key, title in BULK_REPEAT_TITLES.items():
+        items = content.get(key) if isinstance(content.get(key), list) else []
+        normalized = [
+            item for item in items
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        if normalized:
+            result.append((title, normalized))
+    return result
+
+def render_bulk_repeat_content(analysis: dict[str, Any]) -> str:
+    groups = normalized_bulk_repeat_content_for_render(analysis)
+    if not groups:
+        return ""
+    parts = ['<section class="bulk-repeat-content"><h2>批量重复内容</h2>']
+    for title, items in groups:
+        parts.append(f'<div class="bulk-repeat-group"><h3>{html.escape(title)}</h3>')
+        parts.append(render_update_items(items))
+        parts.append("</div>")
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def render_update_items(items: list[dict[str, Any]]) -> str:

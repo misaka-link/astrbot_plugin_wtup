@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..diff_collector import DiffChunk, DiffSummary, normalize_report_title
-from .normalize import normalize_analysis, normalize_list
+from .normalize import is_compound_raw_diff_summary, normalize_analysis, normalize_list
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ def build_change_manifest(summary: DiffSummary, chunk: DiffChunk) -> list[Change
         path = _file_path(file_info)
         file_entries = entries_by_path.get(path) or _file_entries(file_info, _fallback_file_index(summary, file_info))
         for entry in file_entries:
+            if is_compound_raw_diff_summary(entry.description):
+                continue
             if entry.source_id in seen:
                 continue
             seen.add(entry.source_id)
@@ -76,16 +78,17 @@ def enforce_change_coverage(
         }
         return _normalize_analysis_title(summary, normalize_analysis(updated))
 
-    sections = list(normalized.get("update_sections") or [])
-    compacted_items = _compact_missing_items(missing)
-    for index, batch in enumerate(_batches(compacted_items, 500), start=1):
-        title = "需复核的未覆盖变更" if index == 1 else f"需复核的未覆盖变更 {index}"
-        sections.append(
-            {
-                "title": title,
-                "items": batch,
-            }
-        )
+    bulk_repeat_content = (
+        dict(normalized.get("bulk_repeat_content"))
+        if isinstance(normalized.get("bulk_repeat_content"), dict)
+        else {}
+    )
+    needs_verification = list(bulk_repeat_content.get("needs_verification") or [])
+    compacted_items = _classify_compacted_missing_items(_compact_missing_groups(missing))
+    for key in ("batch", "repeated"):
+        bulk_repeat_content[key] = list(bulk_repeat_content.get(key) or []) + compacted_items[key]
+    needs_verification.extend(compacted_items["needs_verification"])
+    bulk_repeat_content["needs_verification"] = needs_verification
 
     ai_analysis = normalized.get("ai_analysis") if isinstance(normalized.get("ai_analysis"), dict) else {}
     updated_ai = dict(ai_analysis)
@@ -98,7 +101,7 @@ def enforce_change_coverage(
     updated_ai["uncertainties"] = uncertainties
 
     updated = dict(normalized)
-    updated["update_sections"] = sections
+    updated["bulk_repeat_content"] = bulk_repeat_content
     updated["ai_analysis"] = updated_ai
     updated["risks"] = uncertainties
     updated["coverage"] = {
@@ -117,10 +120,14 @@ def collect_source_ids(analysis: dict[str, Any]) -> set[str]:
         if not isinstance(section, dict):
             continue
         result.update(_collect_item_source_ids(section.get("items")))
+    bulk_repeat_content = analysis.get("bulk_repeat_content")
+    if isinstance(bulk_repeat_content, dict):
+        for items in bulk_repeat_content.values():
+            result.update(_collect_item_source_ids(items))
     return result
 
 
-def _compact_missing_items(entries: list[ChangeEntry]) -> list[dict[str, Any]]:
+def _compact_missing_groups(entries: list[ChangeEntry]) -> list[CompactedChangeGroup]:
     groups: list[CompactedChangeGroup] = []
     index_by_key: dict[tuple[str, str, str], int] = {}
 
@@ -144,7 +151,28 @@ def _compact_missing_items(entries: list[ChangeEntry]) -> list[dict[str, Any]]:
         if entry.source_id not in group.source_ids:
             group.source_ids.append(entry.source_id)
 
-    return [_compact_group_item(group) for group in groups]
+    return groups
+
+
+def _classify_compacted_missing_items(groups: list[CompactedChangeGroup]) -> dict[str, list[dict[str, Any]]]:
+    summary_counts: dict[str, int] = {}
+    for group in groups:
+        summary_counts[group.summary] = summary_counts.get(group.summary, 0) + 1
+
+    result: dict[str, list[dict[str, Any]]] = {
+        "batch": [],
+        "repeated": [],
+        "needs_verification": [],
+    }
+    for group in groups:
+        item = _compact_group_item(group)
+        if len(group.source_ids) > 1:
+            result["repeated"].append(item)
+        elif summary_counts.get(group.summary, 0) > 1:
+            result["batch"].append(item)
+        else:
+            result["needs_verification"].append(item)
+    return result
 
 
 def _compact_group_item(group: CompactedChangeGroup) -> dict[str, Any]:

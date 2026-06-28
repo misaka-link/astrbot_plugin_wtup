@@ -22,6 +22,9 @@ DEFAULT_ANALYSIS_PROMPT = (
     "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
     "写作 英文名(中文名)，如载具名称有特殊字符也要保留。请注意改动可能并非全部游戏模式，"
     "此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。"
+    "遇到大规模同类机械修改、重复或高度相似内容、批量但含义不明确需要验证的内容时，"
+    "不要塞进主要更新条目，必须剔出到 bulk_repeat_content 的 batch、repeated 或 needs_verification 中，"
+    "并保留对应 source_ids。"
     "必须遵守后续系统给出的 JSON 输出格式要求。"
 )
 DEFAULT_SUMMARY_PROMPT = (
@@ -29,6 +32,8 @@ DEFAULT_SUMMARY_PROMPT = (
     "先整理本次更新条目，再给出 AI 分析。全程使用中文；载具若同时有英文名和中文名，"
     "写作 英文名(中文名) 如载具名称有特殊字符要保留。请注意改动可能并非全部游戏模式，"
     "此为游戏《战争雷霆》的拆包文件，请你语言风格符合战争雷霆玩家。"
+    "整理最终报告时要将批量重复内容从主要更新条目中剔出，分别放入 bulk_repeat_content 的 "
+    "batch、repeated 或 needs_verification，并保留对应 source_ids。"
     "必须遵守后续系统给出的 JSON 输出格式要求。"
 )
 DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (

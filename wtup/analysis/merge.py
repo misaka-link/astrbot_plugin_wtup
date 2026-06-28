@@ -14,7 +14,13 @@ from ..config import PLUGIN_NAME
 from ..diff_collector import DiffChunk, DiffSummary, normalize_report_title
 from .fallback import fallback_analysis
 from .models import ChunkAnalysis
-from .normalize import clean_pagination_text, normalize_analysis, normalize_importance, normalize_update_items
+from .normalize import (
+    BULK_REPEAT_KEYS,
+    clean_pagination_text,
+    normalize_analysis,
+    normalize_importance,
+    normalize_update_items,
+)
 
 
 MERGED_AI_ANALYSIS_ITEM_LIMIT = 50
@@ -32,6 +38,7 @@ def merge_chunk_analyses(
     importance = max_importance(analysis.get("importance") for analysis in analyses)
     tags = unique_preserve_order(tag for analysis in analyses for tag in analysis.get("tags", []))
     update_sections = merge_update_sections(analyses)
+    bulk_repeat_content = merge_bulk_repeat_content(analyses)
 
     changed_content = unique_preserve_order(
         clean_pagination_text(item)
@@ -64,6 +71,7 @@ def merge_chunk_analyses(
             "summary": summary_text,
             "importance": importance,
             "update_sections": update_sections,
+            "bulk_repeat_content": bulk_repeat_content,
             "ai_analysis": {
                 "changed_content": changed_content,
                 "player_impact": player_impact,
@@ -119,6 +127,16 @@ def merge_update_sections(analyses: list[dict[str, Any]]) -> list[dict[str, Any]
     for section in merged:
         section["items"] = dedupe_update_items(section["items"])
     return merged or [{"title": "更新内容", "items": [{"text": "本次更新没有可展示的更新条目。", "children": []}]}]
+
+def merge_bulk_repeat_content(analyses: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {key: [] for key in BULK_REPEAT_KEYS}
+    for analysis in analyses:
+        content = analysis.get("bulk_repeat_content") if isinstance(analysis.get("bulk_repeat_content"), dict) else {}
+        for key in BULK_REPEAT_KEYS:
+            items = normalize_update_items(content.get(key), limit=300)
+            if items:
+                result[key].extend(items)
+    return {key: dedupe_update_items(items) for key, items in result.items()}
 
 def clean_section_title(value: Any) -> str:
     title = str(value or "").strip()
