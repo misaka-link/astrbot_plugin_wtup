@@ -3,10 +3,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
 
 from wtup.diff_collector import DiffChunk, DiffSummary
 from wtup.analysis import TokenUsage
-from wtup.renderer import build_report_html, render_footer_note, render_plain_text, render_watermark, report_display_title
+from wtup.renderer import (
+    build_report_html,
+    render_footer_note,
+    render_plain_text,
+    render_report_output,
+    render_watermark,
+    report_display_title,
+)
 
 
 class RendererFooterNoteTest(unittest.TestCase):
@@ -220,6 +228,104 @@ class RendererFooterNoteTest(unittest.TestCase):
 
         self.assertLess(html.index("批量重复内容"), html.index("AI 分析"))
         self.assertIn("需验证内容", html)
+
+
+class ReportRenderOutputTest(unittest.IsolatedAsyncioTestCase):
+    async def test_t2i_mode_falls_back_to_playwright(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "report.png"
+            with (
+                patch("wtup.renderer.render_report_image_t2i", new=AsyncMock(return_value=None)) as t2i,
+                patch("wtup.renderer.render_report_image_playwright", new=AsyncMock(return_value=image_path)) as playwright,
+            ):
+                result = await render_report_output(
+                    object(),
+                    "<html></html>",
+                    Path(temp_dir),
+                    render_mode="t2i",
+                    fallback_text="纯文字报告",
+                )
+
+            self.assertEqual(result.image_path, image_path)
+            self.assertEqual(result.backend, "playwright")
+            self.assertEqual(result.fallback_notice, "t2i 渲染失败，正在尝试 Playwright...")
+            self.assertEqual(t2i.await_count, 1)
+            self.assertEqual(playwright.await_count, 1)
+
+    async def test_playwright_mode_falls_back_to_t2i(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "report.png"
+            with (
+                patch("wtup.renderer.render_report_image_playwright", new=AsyncMock(return_value=None)),
+                patch("wtup.renderer.render_report_image_t2i", new=AsyncMock(return_value=image_path)),
+            ):
+                result = await render_report_output(
+                    object(),
+                    "<html></html>",
+                    Path(temp_dir),
+                    render_mode="playwright",
+                    fallback_text="纯文字报告",
+                )
+
+            self.assertEqual(result.image_path, image_path)
+            self.assertEqual(result.backend, "t2i")
+            self.assertEqual(result.fallback_notice, "Playwright 渲染失败，正在尝试 t2i...")
+
+    async def test_image_failures_do_not_emit_full_text_by_default(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with (
+                patch("wtup.renderer.render_report_image_t2i", new=AsyncMock(return_value=None)),
+                patch("wtup.renderer.render_report_image_playwright", new=AsyncMock(return_value=None)),
+            ):
+                result = await render_report_output(
+                    object(),
+                    "<html></html>",
+                    Path(temp_dir),
+                    render_mode="t2i",
+                    fallback_text="纯文字报告",
+                    enable_fallback_text=False,
+                )
+
+            self.assertIsNone(result.image_path)
+            self.assertNotIn("纯文字报告", result.message_text)
+            self.assertIn("图片渲染失败，未发送文字报告。", result.message_text)
+
+    async def test_image_failures_emit_full_text_when_enabled(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with (
+                patch("wtup.renderer.render_report_image_t2i", new=AsyncMock(return_value=None)),
+                patch("wtup.renderer.render_report_image_playwright", new=AsyncMock(return_value=None)),
+            ):
+                result = await render_report_output(
+                    object(),
+                    "<html></html>",
+                    Path(temp_dir),
+                    render_mode="t2i",
+                    fallback_text="纯文字报告",
+                    enable_fallback_text=True,
+                )
+
+            self.assertIn("图片渲染失败，已自动切换为文字模式。", result.message_text)
+            self.assertIn("纯文字报告", result.message_text)
+
+    async def test_text_mode_skips_image_rendering(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            with (
+                patch("wtup.renderer.render_report_image_t2i", new=AsyncMock()) as t2i,
+                patch("wtup.renderer.render_report_image_playwright", new=AsyncMock()) as playwright,
+            ):
+                result = await render_report_output(
+                    object(),
+                    "<html></html>",
+                    Path(temp_dir),
+                    render_mode="text",
+                    fallback_text="纯文字报告",
+                )
+
+            self.assertEqual(result.backend, "text")
+            self.assertEqual(result.message_text, "纯文字报告")
+            t2i.assert_not_awaited()
+            playwright.assert_not_awaited()
 
 
 if __name__ == "__main__":

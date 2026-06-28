@@ -31,7 +31,7 @@ from .diff_collector import DiffChunk, build_diff_summary, extract_version_from_
 from .github_cache import GitHubCache
 from .github_client import GitHubClient, GitHubRequestError
 from .notifier import push_admin_notification, push_log_file, push_report, push_text
-from .renderer import build_report_html, render_plain_text, render_report_image
+from .renderer import build_report_html, render_plain_text, render_report_output
 from .runtime import RuntimeState, ceil_minutes, format_elapsed_duration, warning_log
 from .state_store import StateStore
 from .analysis import TokenUsage
@@ -52,6 +52,10 @@ class ReportArtifact:
     log_path: Path
     token_usage: TokenUsage
     append_text: str = ""
+    render_mode: str = ""
+    render_backend: str = ""
+    render_fallback_notice: str = ""
+    render_failed: bool = False
 
 
 def normalize_targets(targets: list[str] | None) -> list[str]:
@@ -67,6 +71,14 @@ def analysis_needs_review(analysis: dict[str, Any]) -> bool:
     summary = str(analysis.get("summary") or "")
     recommendation = str(analysis.get("recommendation") or "")
     return "需要结合 GitHub 原始 diff 复核" in f"{summary}\n{recommendation}"
+
+
+def report_has_deliverable_content(report: "ReportArtifact") -> bool:
+    if report.image_path:
+        return True
+    if report.render_backend == "text":
+        return True
+    return bool(report.render_failed and report.fallback_text and "未发送文字报告" not in report.fallback_text)
 
 
 def chunk_failure_reasons(results: list[ChunkAnalysis]) -> list[str]:
@@ -693,8 +705,17 @@ class UpdateCheckService:
                     watermark_opacity_percent=self.settings.watermark_opacity_percent,
                     watermark_density=self.settings.watermark_density,
                 )
-                image_path = await render_report_image(self.render_host, html_text, self.image_dir)
                 fallback_text = render_plain_text(summary, report_chunk, report_analysis, report_label=display_name)
+                render_result = await render_report_output(
+                    self.render_host,
+                    html_text,
+                    self.image_dir,
+                    render_mode=self.settings.render_mode,
+                    fallback_text=fallback_text,
+                    enable_fallback_text=self.settings.enable_render_fallback_text,
+                )
+                image_path = render_result.image_path
+                push_fallback_text = render_result.message_text or fallback_text
                 log_path = self.runtime.save_report_log(
                     summary,
                     report_analysis,
@@ -710,6 +731,9 @@ class UpdateCheckService:
                     {
                         "报告类型": display_name or "合并报告",
                         "图片路径": str(image_path) if image_path else "",
+                        "渲染模式": render_result.requested_mode,
+                        "实际渲染": render_result.backend or "失败",
+                        "渲染提示": render_result.fallback_notice,
                         "报告日志路径": str(log_path),
                         "报告总token": report_token_usage.total_tokens,
                     },
@@ -720,10 +744,14 @@ class UpdateCheckService:
                         display_name=display_name,
                         analysis=report_analysis,
                         html_text=html_text,
-                        fallback_text=fallback_text,
+                        fallback_text=push_fallback_text,
                         image_path=image_path,
                         log_path=log_path,
                         token_usage=report_token_usage,
+                        render_mode=render_result.requested_mode,
+                        render_backend=render_result.backend,
+                        render_fallback_notice=render_result.fallback_notice,
+                        render_failed=render_result.failed,
                     )
                 )
                 check_task_termination(self.settings, f"生成报告文件后: {display_name or '合并报告'}")
@@ -802,6 +830,24 @@ class UpdateCheckService:
                 )
                 for report in report_artifacts:
                     check_task_termination(self.settings, f"报告推送前: {report.display_name or '合并报告'}")
+                    if report.image_path and report.render_fallback_notice:
+                        notice_ok, notice_failed = await push_text(
+                            self.context,
+                            push_targets,
+                            text=report.render_fallback_notice,
+                            event=event,
+                            should_terminate=lambda: task_should_terminate(self.settings),
+                        )
+                        sent_count += notice_ok
+                        failed_count += notice_failed
+                        self.runtime.record_task_log(
+                            "渲染降级提示推送完成",
+                            {
+                                "报告类型": report.display_name or "合并报告",
+                                "成功": notice_ok,
+                                "失败": notice_failed,
+                            },
+                        )
                     ok, failed = await push_report(
                         self.context,
                         push_targets,
@@ -896,6 +942,7 @@ class UpdateCheckService:
                         },
                     )
 
+            reports_generated = not analysis_failed and bool(report_artifacts) and report_has_deliverable_content(final_report)
             self.runtime.save_task_state(
                 summary=summary,
                 analysis=analysis,
@@ -907,11 +954,15 @@ class UpdateCheckService:
                         "display_name": report.display_name,
                         "log_path": report.log_path,
                         "image_path": report.image_path,
+                        "render_mode": report.render_mode,
+                        "render_backend": report.render_backend,
+                        "render_fallback_notice": report.render_fallback_notice,
+                        "render_failed": report.render_failed,
                     }
                     for report in report_artifacts
                 ],
                 manual=manual,
-                sent_to_groups=send_to_groups and not analysis_failed and bool(report_artifacts),
+                sent_to_groups=send_to_groups and reports_generated,
                 target_groups=push_targets,
                 sent_count=sent_count,
                 failed_count=failed_count,
@@ -919,7 +970,6 @@ class UpdateCheckService:
                 task_log_path=task_log_path,
             )
 
-            reports_generated = not analysis_failed and bool(report_artifacts)
             should_mark_seen = (not manual and not send_to_groups) or (send_to_groups and reports_generated)
             if should_mark_seen:
                 self.runtime.save_seen_commit(latest.sha)
@@ -932,7 +982,7 @@ class UpdateCheckService:
                 )
             elif send_to_groups and push_targets:
                 logger.warning(
-                    "[%s] 本次报告未成功发送到任何目标，保留 commit 进度在 %s，下次循环继续重试 %s",
+                    "[%s] 本次没有送达报告正文，保留 commit 进度在 %s，下次循环继续重试 %s",
                     PLUGIN_NAME,
                     short_sha(previous_sha),
                     short_sha(latest.sha),
@@ -956,6 +1006,8 @@ class UpdateCheckService:
                         message += " 未配置管理员列表。"
                 else:
                     message += f" 推送成功 {sent_count}，失败 {failed_count}。"
+                    if not reports_generated:
+                        message += " 未送达报告正文，未标记本次 commit 完成。"
             warning_log("[%s] 检查完成: %s", PLUGIN_NAME, message)
             result = {
                 "message": message,
@@ -963,6 +1015,10 @@ class UpdateCheckService:
                 "log_path": log_path,
                 "task_log_path": task_log_path,
                 "append_text": append_text,
+                "render_mode": final_report.render_mode,
+                "render_backend": final_report.render_backend,
+                "render_fallback_notice": final_report.render_fallback_notice,
+                "render_failed": final_report.render_failed,
                 "analysis_failed": analysis_failed,
                 "admin_sent_count": admin_sent_count,
                 "admin_failed_count": admin_failed_count,
@@ -980,6 +1036,10 @@ class UpdateCheckService:
                         "log_path": report.log_path,
                         "fallback_text": report.fallback_text,
                         "append_text": report.append_text,
+                        "render_mode": report.render_mode,
+                        "render_backend": report.render_backend,
+                        "render_fallback_notice": report.render_fallback_notice,
+                        "render_failed": report.render_failed,
                     }
                     for report in report_artifacts
                 ],

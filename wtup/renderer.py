@@ -5,6 +5,7 @@ import html
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,14 @@ except ModuleNotFoundError:
 
     logger = logging.getLogger(__name__)
 
-from .config import BRANCH_NAME, PLUGIN_NAME, REPO_FULL_NAME
+from .config import (
+    BRANCH_NAME,
+    PLUGIN_NAME,
+    RENDER_MODE_PLAYWRIGHT,
+    RENDER_MODE_T2I,
+    RENDER_MODE_TEXT,
+    REPO_FULL_NAME,
+)
 from .diff_collector import DiffChunk, DiffSummary, normalize_report_title, short_sha
 from .token_usage import format_token_usage_text
 
@@ -33,6 +41,29 @@ RENDER_OPTIONS = {
     "full_page": True,
     "type": "png",
 }
+RENDER_BACKEND_NAMES = {
+    RENDER_MODE_PLAYWRIGHT: "Playwright",
+    RENDER_MODE_T2I: "t2i",
+    RENDER_MODE_TEXT: "text",
+}
+
+
+@dataclass
+class ReportRenderResult:
+    image_path: Path | None = None
+    message_text: str = ""
+    backend: str = ""
+    requested_mode: str = RENDER_MODE_T2I
+    notices: list[str] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def fallback_notice(self) -> str:
+        return "\n".join(self.notices).strip()
+
+    @property
+    def failed(self) -> bool:
+        return self.image_path is None and self.backend != RENDER_MODE_TEXT
 
 
 def build_report_html(
@@ -97,6 +128,10 @@ def load_template_css(template_path: Path) -> str:
 
 
 async def render_report_image(plugin: Any, html_text: str, output_dir: Path) -> Path | None:
+    return await render_report_image_t2i(plugin, html_text, output_dir)
+
+
+async def render_report_image_t2i(plugin: Any, html_text: str, output_dir: Path) -> Path | None:
     render_func = getattr(plugin, "html_render", None)
     if not callable(render_func):
         logger.warning("[%s] html_render 不可用，跳过图片渲染", PLUGIN_NAME)
@@ -117,6 +152,131 @@ async def render_report_image(plugin: Any, html_text: str, output_dir: Path) -> 
     output_path = output_dir / f"wtup_report_{time.time_ns()}.png"
     output_path.write_bytes(image_bytes)
     return output_path
+
+
+async def render_report_image_playwright(html_text: str, output_dir: Path) -> Path | None:
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.warning("[%s] Playwright 未安装，跳过本地浏览器渲染", PLUGIN_NAME)
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"wtup_report_{time.time_ns()}.png"
+    playwright = None
+    browser = None
+    page = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-extensions",
+            ],
+        )
+        page = await browser.new_page(device_scale_factor=2)
+        await page.set_viewport_size({"width": int(RENDER_OPTIONS["width"]), "height": int(RENDER_OPTIONS["height"])})
+        await page.set_content(html_text, wait_until="load")
+        await page.evaluate("document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()")
+        body_width = await page.evaluate(
+            "Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0)"
+        )
+        body_height = await page.evaluate(
+            "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)"
+        )
+        width = max(int(RENDER_OPTIONS["width"]), min(int(body_width or 0), 2400))
+        height = max(int(RENDER_OPTIONS["height"]), min(int(body_height or 0), 12000))
+        await page.set_viewport_size({"width": width, "height": height})
+        await page.screenshot(path=output_path, full_page=bool(RENDER_OPTIONS["full_page"]))
+        if not is_valid_image_bytes(output_path.read_bytes()):
+            output_path.unlink(missing_ok=True)
+            logger.warning("[%s] Playwright 返回了无效图片", PLUGIN_NAME)
+            return None
+        return output_path
+    except Exception as exc:
+        output_path.unlink(missing_ok=True)
+        logger.warning("[%s] Playwright 报告图片渲染失败: %s", PLUGIN_NAME, exc)
+        return None
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+
+
+async def render_report_output(
+    plugin: Any,
+    html_text: str,
+    output_dir: Path,
+    *,
+    render_mode: str,
+    fallback_text: str,
+    enable_fallback_text: bool = False,
+) -> ReportRenderResult:
+    requested_mode = render_mode if render_mode in {RENDER_MODE_T2I, RENDER_MODE_PLAYWRIGHT, RENDER_MODE_TEXT} else RENDER_MODE_T2I
+    if requested_mode == RENDER_MODE_TEXT:
+        return ReportRenderResult(message_text=fallback_text, backend=RENDER_MODE_TEXT, requested_mode=requested_mode)
+
+    order = (
+        [RENDER_MODE_PLAYWRIGHT, RENDER_MODE_T2I]
+        if requested_mode == RENDER_MODE_PLAYWRIGHT
+        else [RENDER_MODE_T2I, RENDER_MODE_PLAYWRIGHT]
+    )
+    result = ReportRenderResult(requested_mode=requested_mode)
+    for index, backend in enumerate(order):
+        image_path = await _try_render_backend(plugin, backend, html_text, output_dir)
+        if image_path is not None:
+            result.image_path = image_path
+            result.backend = backend
+            return result
+
+        label = RENDER_BACKEND_NAMES[backend]
+        result.errors[backend] = f"{label} 渲染失败"
+        if index == 0:
+            next_label = RENDER_BACKEND_NAMES[order[index + 1]]
+            result.notices.append(f"{label} 渲染失败，正在尝试 {next_label}...")
+
+    result.backend = ""
+    result.notices.append("图片渲染失败，已自动切换为文字模式。" if enable_fallback_text else "图片渲染失败，未发送文字报告。")
+    result.message_text = build_render_fallback_message(fallback_text, result.notices, enable_fallback_text=enable_fallback_text)
+    return result
+
+
+async def _try_render_backend(plugin: Any, backend: str, html_text: str, output_dir: Path) -> Path | None:
+    if backend == RENDER_MODE_T2I:
+        return await render_report_image_t2i(plugin, html_text, output_dir)
+    if backend == RENDER_MODE_PLAYWRIGHT:
+        return await render_report_image_playwright(html_text, output_dir)
+    return None
+
+
+def build_render_fallback_message(
+    fallback_text: str,
+    notices: list[str],
+    *,
+    enable_fallback_text: bool,
+) -> str:
+    notice_text = "\n".join(str(item).strip() for item in notices if str(item or "").strip()).strip()
+    if enable_fallback_text:
+        return f"{notice_text}\n\n{fallback_text}".strip()
+    return notice_text or "图片渲染失败，未发送文字报告。"
 
 
 def render_plain_text(

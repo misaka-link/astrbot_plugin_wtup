@@ -575,6 +575,14 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.watermark_opacity_percent, 35)
         self.assertEqual(settings.watermark_density, "high")
 
+    def test_render_mode_defaults_to_t2i_and_normalizes_aliases(self) -> None:
+        self.assertEqual(load_config({}).render_mode, "t2i")
+        self.assertEqual(load_config({"render_mode": "playwright"}).render_mode, "playwright")
+        self.assertEqual(load_config({"render_mode": "文字"}).render_mode, "text")
+        self.assertEqual(load_config({"render_mode": "unknown"}).render_mode, "t2i")
+        self.assertFalse(load_config({}).enable_render_fallback_text)
+        self.assertTrue(load_config({"enable_render_fallback_text": "开启"}).enable_render_fallback_text)
+
     def test_model_provider_config_items_are_grouped_first(self) -> None:
         schema_path = Path(__file__).resolve().parents[1] / "_conf_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))

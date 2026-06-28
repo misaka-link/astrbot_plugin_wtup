@@ -566,6 +566,9 @@ class WTUpdatePlugin(Star):
                     if not isinstance(report, dict):
                         continue
                     image_path = report.get("image_path")
+                    render_notice = str(report.get("render_fallback_notice") or "").strip()
+                    if image_path and render_notice:
+                        yield event.plain_result(render_notice)
                     if image_path:
                         yield event.image_result(str(image_path))
                     else:
@@ -579,6 +582,9 @@ class WTUpdatePlugin(Star):
                     yield event.plain_result(append_text)
                 return
             if result.get("image_path"):
+                render_notice = str(result.get("render_fallback_notice") or "").strip()
+                if render_notice:
+                    yield event.plain_result(render_notice)
                 yield event.image_result(str(result["image_path"]))
                 append_text = str(result.get("append_text") or "").strip()
                 if append_text:

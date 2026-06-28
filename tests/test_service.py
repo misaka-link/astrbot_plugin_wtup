@@ -7,8 +7,33 @@ from unittest.mock import AsyncMock, patch
 
 from wtup.config import load_config
 from wtup.analysis import ChunkAnalysis, TokenUsage
+from wtup.renderer import ReportRenderResult
 from wtup.service import UpdateCheckService
 from wtup.state_store import StateStore
+
+
+def render_output_result(image_path=None, message_text="", backend="text", requested_mode="t2i", notices=None, errors=None):
+    return ReportRenderResult(
+        image_path=image_path,
+        message_text=message_text,
+        backend=backend,
+        requested_mode=requested_mode,
+        notices=list(notices or []),
+        errors=dict(errors or {}),
+    )
+
+
+async def render_output_text_result(plugin, html_text, output_dir, *, render_mode, fallback_text, enable_fallback_text=False):
+    return render_output_result(message_text=fallback_text, backend="text", requested_mode=render_mode)
+
+
+async def render_output_failed_without_text(plugin, html_text, output_dir, *, render_mode, fallback_text, enable_fallback_text=False):
+    return render_output_result(
+        message_text="t2i 渲染失败，正在尝试 Playwright...\n图片渲染失败，未发送文字报告。",
+        backend="",
+        requested_mode=render_mode,
+        notices=["t2i 渲染失败，正在尝试 Playwright...", "图片渲染失败，未发送文字报告。"],
+    )
 
 
 class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -73,7 +98,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[])),
                 patch("wtup.service.merge_chunk_analyses", return_value={"summary": "摘要", "update_sections": []}),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)) as render_report_image,
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)) as render_report_output,
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -82,7 +107,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
 
                 await service.check_once(manual=True, force_latest=False, send_to_groups=False)
 
-            self.assertIs(render_report_image.await_args.args[0], render_host)
+            self.assertIs(render_report_output.await_args.args[0], render_host)
 
     async def test_check_once_reuses_cached_compare_and_diff(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -129,7 +154,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[])),
                 patch("wtup.service.merge_chunk_analyses", return_value={"summary": "摘要", "update_sections": []}),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -196,7 +221,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])) as analyze_chunks,
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis) as merge_chunk_analyses,
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=base / "images" / "report.png")),
+                patch("wtup.service.render_report_output", new=AsyncMock(return_value=render_output_result(image_path=base / "images" / "report.png", backend="t2i"))),
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -256,7 +281,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])) as analyze_chunks,
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -336,7 +361,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[])),
                 patch("wtup.service.merge_chunk_analyses", return_value={"summary": "摘要", "update_sections": []}),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -530,7 +555,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
                 patch("wtup.service.refine_merged_analysis_with_usage", new=AsyncMock(return_value=(chunk_result.analysis, TokenUsage()))),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))),
                 patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))) as push_text,
             ):
@@ -631,7 +656,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                         )
                     ),
                 ),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
                 patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))) as push_text,
                 patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))) as push_log_file,
@@ -760,7 +785,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                             )
                         ),
                     ),
-                    patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                    patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 ):
                     client = client_class.return_value
                     client.get_latest_commit.return_value = latest
@@ -837,7 +862,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
             ):
                 client = client_class.return_value
                 client.get_latest_commit.return_value = latest
@@ -911,7 +936,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
                 patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))) as push_log_file,
             ):
@@ -988,7 +1013,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))),
             ):
                 client = client_class.return_value
@@ -1003,6 +1028,76 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["report_sent_count"], 1)
             self.assertEqual(repo_state["last_commit_sha"], "head")
             self.assertIn("last_pushed_task", repo_state)
+
+    async def test_image_failure_without_text_fallback_does_not_mark_commit_seen(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            template_path = base / "help_miku.html"
+            template_path.write_text("<style>{{ style_css }}</style>{{ summary_html }}", encoding="utf-8")
+            template_path.with_suffix(".css").write_text(".card {}", encoding="utf-8")
+            state_store = StateStore(base / "state.json")
+            state_store.update_repo_state(
+                "gszabi99/War-Thunder-Datamine",
+                {"last_commit_sha": "base"},
+            )
+            service = UpdateCheckService(
+                context=object(),
+                settings=load_config({"target_groups": ["123"]}),
+                state_store=state_store,
+                image_dir=base / "images",
+                log_dir=base / "logs",
+                error_dir=base / "errors",
+                template_path=template_path,
+            )
+
+            latest = type("Commit", (), {"sha": "head", "parents": ["base"]})()
+            compare_payload = {
+                "base_commit": {"sha": "base"},
+                "merge_base_commit": {"sha": "base"},
+                "status": "ahead",
+                "ahead_by": 1,
+                "total_commits": 1,
+                "commits": [],
+                "files": [
+                    {
+                        "filename": "a.blkx",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "patch": "+a",
+                    }
+                ],
+                "html_url": "",
+            }
+            chunk_result = ChunkAnalysis(
+                1,
+                1,
+                {
+                    "report_title": "2.56.0.38->2.56.0.39",
+                    "summary": "摘要",
+                    "update_sections": [],
+                },
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+            )
+
+            with (
+                patch("wtup.service.GitHubClient") as client_class,
+                patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
+                patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_failed_without_text)),
+                patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))),
+            ):
+                client = client_class.return_value
+                client.get_latest_commit.return_value = latest
+                client.compare_commits.return_value = compare_payload
+                client.compare_diff_text.return_value = ""
+
+                result = await service.check_once(manual=False, force_latest=False, send_to_groups=True)
+
+            repo_state = state_store.get_repo_state("gszabi99/War-Thunder-Datamine")
+            self.assertFalse(result["commit_marked_complete"])
+            self.assertTrue(result["render_failed"])
+            self.assertEqual(repo_state["last_commit_sha"], "base")
 
     async def test_group_report_failure_still_marks_commit_seen_after_report_generated(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -1065,7 +1160,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(0, 1))),
                 patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))),
             ):
@@ -1144,7 +1239,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(0, 1))),
                 patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))),
             ):
@@ -1230,7 +1325,7 @@ class UpdateCheckServiceTest(unittest.IsolatedAsyncioTestCase):
                 patch("wtup.service.GitHubClient") as client_class,
                 patch("wtup.service.analyze_chunks", new=AsyncMock(return_value=[chunk_result])),
                 patch("wtup.service.merge_chunk_analyses", return_value=chunk_result.analysis),
-                patch("wtup.service.render_report_image", new=AsyncMock(return_value=None)),
+                patch("wtup.service.render_report_output", new=AsyncMock(side_effect=render_output_text_result)),
                 patch("wtup.service.push_report", new=AsyncMock(return_value=(1, 0))) as push_report,
                 patch("wtup.service.push_text", new=AsyncMock(return_value=(1, 0))) as push_text,
                 patch("wtup.service.push_log_file", new=AsyncMock(return_value=(1, 0))) as push_log_file,

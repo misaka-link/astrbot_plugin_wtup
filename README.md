@@ -78,6 +78,8 @@ mode: commit
 - `review_upgrade_on_missing_ids`：自动档在漏项较多时自动升级质量档，默认开启。
 - `review_upgrade_on_context_failure`：自动档在动态补充失败或需复核风险较高时自动升级质量档，默认开启。
 - `enable_push_append_text`：推送时是否启动追加文字内容推送，默认关闭。启用双报告时，每份报告图片后都会追加一条对应文字。
+- `render_mode`：报告渲染方式，默认 `t2i`。可选 `t2i`、`playwright`、`text`。`t2i` 使用 AstrBot `html_render` / 文转图服务渲染，失败后自动尝试 Playwright；`playwright` 使用本地 Chromium 截图，失败后自动尝试 t2i；`text` 直接发送纯文字报告。
+- `enable_render_fallback_text`：图片渲染全部失败后是否发送整篇文字报告，默认关闭。关闭时只发送降级失败提示，避免长文字刷屏；开启后会发送“图片渲染失败，已自动切换为文字模式”并附带纯文字报告。
 - `push_append_text_template`：追加文字内容模板，支持 `{version_range}`、`{token_count}`、`{elapsed_duration}`、`{耗时}`、`{elapsed_minutes}`、`{analysis_model}`、`{summary_model}`、`{analysis_model_name}`、`{summary_model_name}`、`{analysis_model_chain}`、`{summary_model_chain}`、`{analysis_model_chain_name}`、`{summary_model_chain_name}`。其中 `{token_count}` 为模型接口返回的真实总 token 消耗，`{elapsed_duration}` 和 `{耗时}` 会输出 `x分x秒`；如果中途切换备用模型，模型变量会按实际请求链路输出，例如 `glm-5.1 -> gemini-3.5-flash`，`*_name` 会取 Provider ID 最后一个 `/` 后面的纯模型名。
 - `footer_note`：报告图片左下角文本，支持多行和简单 Markdown 链接，默认显示 `gszabi99/War-Thunder-Datamine` 仓库链接。
 - `watermark_text`：报告图片水印内容，默认空。内容为空时不会增加水印。
@@ -237,6 +239,10 @@ GitHub 请求失败会按 `github_max_retry_count` 重试，默认最多重试 4
 启用 `enable_pre_summary_report` 的双报告模式下，分析前报告显示和保存的是总结模型调用前的累计 token；分析后报告显示和保存的是包含总结模型在内的最终累计 token。
 
 ## 推送附加内容
+
+报告渲染支持三种模式：`t2i`、`playwright`、`text`。默认 `t2i` 会优先使用 AstrBot 的 `html_render` / 文转图能力生成图片；如果失败，会自动尝试 Playwright 本地 Chromium 截图。选择 `playwright` 时降级顺序相反：先 Playwright，失败后再尝试 t2i。只要第二种图片渲染成功，插件会先发送一条降级提示，再继续发送图片。Playwright 为可选能力，运行环境未安装时会记录日志并自动进入 t2i 降级链。
+
+如果两种图片渲染都失败，插件会降级到文字模式。默认只发送失败提示，不发送整篇文字报告；后台开启 `enable_render_fallback_text` 后，才会把纯文字报告一起发出。选择 `text` 模式时不会尝试图片渲染，会直接发送纯文字报告。
 
 开启 `enable_push_append_text` 后，报告图片推送完成后会追加一条文字消息；使用 `/wtup_check 强制` 时，这条文字会发送到当前群。默认模板示例：
 

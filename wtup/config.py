@@ -46,6 +46,11 @@ DEFAULT_PUSH_APPEND_TEXT_TEMPLATE = (
 DEFAULT_WATERMARK_OPACITY_PERCENT = 8
 DEFAULT_WATERMARK_DENSITY = "medium"
 WATERMARK_DENSITIES = {"low", "medium", "high"}
+RENDER_MODE_T2I = "t2i"
+RENDER_MODE_PLAYWRIGHT = "playwright"
+RENDER_MODE_TEXT = "text"
+RENDER_MODES = {RENDER_MODE_T2I, RENDER_MODE_PLAYWRIGHT, RENDER_MODE_TEXT}
+DEFAULT_RENDER_MODE = RENDER_MODE_T2I
 DEFAULT_TOOL_CALL_PROMPT = (
     "当当前分片不足以判断关联挂载、完整参数或同名配置时，可以通过 tool_calls 申请补充上下文。"
     "只请求本次 diff 涉及或强相关的文件；优先使用 read_changed_patch、read_changed_file、search_changed_files、list_related_files。"
@@ -85,6 +90,8 @@ class PluginConfig:
     max_retry_count: int
     enable_push_append_text: bool
     push_append_text_template: str
+    render_mode: str = DEFAULT_RENDER_MODE
+    enable_render_fallback_text: bool = False
     restore_default_prompts: bool = False
     enable_review_model: bool = False
     review_mode: str = REVIEW_MODE_QUALITY
@@ -231,6 +238,24 @@ def normalize_token_unit(value: Any) -> str:
     return "M" if text == "M" else "K"
 
 
+def normalize_render_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "图片": RENDER_MODE_T2I,
+        "文转图": RENDER_MODE_T2I,
+        "html_render": RENDER_MODE_T2I,
+        "t2i": RENDER_MODE_T2I,
+        "playwright": RENDER_MODE_PLAYWRIGHT,
+        "浏览器": RENDER_MODE_PLAYWRIGHT,
+        "本地浏览器": RENDER_MODE_PLAYWRIGHT,
+        "文字": RENDER_MODE_TEXT,
+        "文本": RENDER_MODE_TEXT,
+        "text": RENDER_MODE_TEXT,
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in RENDER_MODES else DEFAULT_RENDER_MODE
+
+
 def normalize_review_mode(value: Any) -> str:
     text = str(value or "").strip().lower()
     aliases = {
@@ -364,6 +389,8 @@ def load_config(config: Any) -> PluginConfig:
             config_get(config, "push_append_text_template", DEFAULT_PUSH_APPEND_TEXT_TEMPLATE)
             or DEFAULT_PUSH_APPEND_TEXT_TEMPLATE
         ),
+        render_mode=normalize_render_mode(config_get(config, "render_mode", DEFAULT_RENDER_MODE)),
+        enable_render_fallback_text=as_bool(config_get(config, "enable_render_fallback_text", False)),
         restore_default_prompts=as_bool(config_get(config, "restore_default_prompts", False)),
         enable_review_model=as_bool(config_get(config, "enable_review_model", False)),
         review_mode=normalize_review_mode(config_get(config, "review_mode", REVIEW_MODE_QUALITY)),
