@@ -1738,9 +1738,13 @@ async def render_report_to_image(
                     except Exception:
                         target = driver.find_element(By.TAG_NAME, "body")
 
-                    # 1. 动态自适应视口尺寸：防止超出 1200px 时被 Chromium 视口硬性裁剪
-                    req_w = max(1200, int(target.size.get("width", 840) + target.location.get("x", 0) * 2 + 100))
-                    req_h = max(1200, int(target.size.get("height", 1200) + target.location.get("y", 0) + 150))
+                    # 1. 动态自适应视口尺寸：根据内容实际 scrollHeight/offsetHeight 精确计算完整高度，支持超长图片自适应渲染
+                    canvas_w = int(driver.execute_script("return Math.max(arguments[0].offsetWidth, arguments[0].scrollWidth, 840);", target) or 840)
+                    canvas_h = int(driver.execute_script("return Math.max(arguments[0].offsetHeight, arguments[0].scrollHeight, 1200);", target) or 1200)
+                    loc_y = int(target.location.get("y", 0))
+
+                    req_w = max(1200, canvas_w + 300)
+                    req_h = max(1200, canvas_h + loc_y + 150)
                     driver.set_window_size(req_w, req_h)
 
                     # 2. 等待外部网络图片与字体加载完毕 (最长等待 6 秒，完成即提前回调)
@@ -1774,10 +1778,26 @@ async def render_report_to_image(
                     except Exception:
                         pass
 
-                    # 3. 再次获取自适应高度（图片全部加载后内容高度可能撑开）
-                    final_h = max(req_h, int(target.size.get("height", 1200) + target.location.get("y", 0) + 150))
+                    # 3. 再次获取自适应高度（图片全部加载后内容高度可能撑开，确保绝无裁切）
+                    final_h = int(driver.execute_script("return Math.max(arguments[0].offsetHeight, arguments[0].scrollHeight);", target) or canvas_h)
+                    final_h = max(req_h, final_h + loc_y + 150)
                     if final_h > req_h:
-                        driver.set_window_size(req_w, final_h)
+                        req_h = final_h
+                        driver.set_window_size(req_w, req_h)
+
+                    # 4. 超长图片安全防护：若总像素高度极大 (超过 32000px)，自适应缩放以确保成功生成
+                    effective_scale = scale_factor
+                    if req_h * effective_scale > 32000:
+                        effective_scale = max(1.0, 32000.0 / float(req_h))
+                        try:
+                            driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                                'width': req_w,
+                                'height': req_h,
+                                'deviceScaleFactor': effective_scale,
+                                'mobile': False,
+                            })
+                        except Exception:
+                            pass
 
                     return target.screenshot_as_png
                 finally:

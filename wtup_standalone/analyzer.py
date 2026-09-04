@@ -405,4 +405,5 @@ class DatamineAnalyzer:
             images=analysis.get("images") or [],
             model=str(analysis.get("model") or self.config.model or "默认模型"),
             elapsed_seconds=elapsed,
+            datamine_text=str(analysis.get("datamine_text") or ""),
         )

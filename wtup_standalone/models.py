@@ -91,6 +91,7 @@ class AnalysisResult:
     images: list[dict[str, str]] = field(default_factory=list)
     model: str = ""
     elapsed_seconds: float = 0.0
+    datamine_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +112,7 @@ class AnalysisResult:
             "images": self.images,
             "model": self.model,
             "elapsed_seconds": self.elapsed_seconds,
+            "datamine_text": self.datamine_text,
         }
 
     def to_markdown(self) -> str:
