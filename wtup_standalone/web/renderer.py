@@ -1721,6 +1721,20 @@ async def render_report_to_image(
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_html = Path(tmpdir) / "report.html"
                 tmp_html.write_text(html_content, encoding="utf-8")
+
+                # 预估页面高度，智能自适应设备缩放倍率，防止超长图片在 2x/3x 缩放下产生几万像素导致显存/渲染崩溃
+                lines_count = html_content.count("\n")
+                img_count = html_content.count("<img ")
+                est_h = lines_count * 18 + img_count * 50 + 1000
+
+                effective_scale = scale_factor
+                if est_h > 15000:
+                    effective_scale = 1.0
+                elif est_h > 8000:
+                    effective_scale = min(effective_scale, 1.5)
+
+                init_h = min(32000, max(1200, est_h))
+
                 options = Options()
                 options.add_argument("--headless=new")
                 options.add_argument("--no-sandbox")
@@ -1728,8 +1742,8 @@ async def render_report_to_image(
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--allow-file-access-from-files")
                 options.add_argument("--disable-web-security")
-                options.add_argument("--window-size=1200,1200")
-                options.add_argument(f"--force-device-scale-factor={scale_factor}")
+                options.add_argument(f"--window-size=1200,{init_h}")
+                options.add_argument(f"--force-device-scale-factor={effective_scale}")
                 driver = webdriver.Chrome(options=options)
                 try:
                     driver.get(f"file://{tmp_html}")
@@ -1744,8 +1758,9 @@ async def render_report_to_image(
                     loc_y = int(target.location.get("y", 0))
 
                     req_w = max(1200, canvas_w + 300)
-                    req_h = max(1200, canvas_h + loc_y + 150)
-                    driver.set_window_size(req_w, req_h)
+                    req_h = max(init_h, canvas_h + loc_y + 150)
+                    if req_h > init_h:
+                        driver.set_window_size(req_w, req_h)
 
                     # 2. 等待外部网络图片与字体加载完毕 (最长等待 6 秒，完成即提前回调)
                     try:
