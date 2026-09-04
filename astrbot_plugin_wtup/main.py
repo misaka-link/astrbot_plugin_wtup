@@ -453,6 +453,7 @@ class WTUpdateClient(Star):
 
     async def _send_to_target(self, target: str, text: str, image_bytes: bytes | None) -> None:
         """向目标发送群聊/私聊消息 (支持 AstrBot Star 发送机制与 OneBot call_action)。"""
+        # 1. 尝试使用 OneBot call_action ("send_group_msg")
         if target.isdigit():
             msg_data = []
             if text:
@@ -468,21 +469,64 @@ class WTUpdateClient(Star):
                     if inspect.isawaitable(res):
                         await res
                     return
-                except Exception:
-                    continue
+                except Exception as exc:
+                    logger.debug("[%s] call_action send_group_msg 异常: %s", PLUGIN_NAME, exc)
 
+        # 2. 构建 AstrBot MessageChain
         chain = MessageChain()
         if text:
             chain.message(text)
         if image_bytes:
             self._append_image_to_chain(chain, image_bytes)
 
+        # 3. 尝试通过 AiocqhttpMessageEvent / PlatformAdapter 直接发送
+        pm = getattr(self.context, "platform_manager", None) or getattr(self.context, "_platform_manager", None)
+        if pm:
+            platforms = getattr(pm, "platform_insts", []) or []
+            for p in platforms:
+                # 3.1 尝试通过 platform.bot 发送
+                bot = getattr(p, "bot", None)
+                if bot:
+                    try:
+                        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                        await AiocqhttpMessageEvent.send_message(
+                            bot=bot,
+                            message_chain=chain,
+                            event=None,
+                            is_group=target.isdigit(),
+                            session_id=str(target),
+                        )
+                        return
+                    except Exception as exc:
+                        logger.debug("[%s] AiocqhttpMessageEvent.send_message 异常: %s", PLUGIN_NAME, exc)
+
+                # 3.2 尝试通过 platform.send_by_session 发送
+                if hasattr(p, "send_by_session"):
+                    try:
+                        from astrbot.core.platform.astr_message_event import MessageSession, MessageType
+                        sess = MessageSession(
+                            platform_name=p.meta().id,
+                            message_type=MessageType.GROUP_MESSAGE if target.isdigit() else MessageType.FRIEND_MESSAGE,
+                            session_id=str(target),
+                        )
+                        await p.send_by_session(sess, chain)
+                        return
+                    except Exception as exc:
+                        logger.debug("[%s] platform.send_by_session 异常: %s", PLUGIN_NAME, exc)
+
+        # 4. 尝试通过 context.send_message 发送
         if hasattr(self.context, "send_message"):
-            try:
-                await self.context.send_message(target, chain)
-                return
-            except Exception as exc:
-                logger.debug("[%s] context.send_message 异常: %s", PLUGIN_NAME, exc)
+            sessions_to_try = [target]
+            if target.isdigit() and pm:
+                for p in getattr(pm, "platform_insts", []):
+                    sessions_to_try.append(f"{p.meta().id}:GroupMessage:{target}")
+            for sess_str in sessions_to_try:
+                try:
+                    ok = await self.context.send_message(sess_str, chain)
+                    if ok is not False:
+                        return
+                except Exception as exc:
+                    logger.debug("[%s] context.send_message (%s) 异常: %s", PLUGIN_NAME, sess_str, exc)
 
         raise RuntimeError(f"无法向目标 {target} 发送消息：未找到适用的发送渠道")
 
