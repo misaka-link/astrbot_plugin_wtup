@@ -31,13 +31,25 @@ class CrossFileChangeGroup:
     source_ids: list[str]
 
 
+def _get_file_index_map(summary: DiffSummary) -> dict[str, int]:
+    index_map = getattr(summary, "_path_to_file_index", None)
+    if index_map is None:
+        index_map = {_file_path(f): i for i, f in enumerate(summary.files, start=1)}
+        try:
+            summary._path_to_file_index = index_map
+        except Exception:
+            pass
+    return index_map
+
+
 def build_change_manifest(summary: DiffSummary, chunk: DiffChunk) -> list[ChangeEntry]:
-    entries_by_path = _summary_entries_by_path(summary)
+    index_map = _get_file_index_map(summary)
     entries: list[ChangeEntry] = []
     seen: set[str] = set()
     for file_info in chunk.files:
         path = _file_path(file_info)
-        file_entries = entries_by_path.get(path) or _file_entries(file_info, _fallback_file_index(summary, file_info))
+        file_index = index_map.get(path) or _fallback_file_index(summary, file_info)
+        file_entries = _file_entries(file_info, file_index)
         for entry in file_entries:
             if is_compound_raw_diff_summary(entry.description):
                 continue
@@ -323,22 +335,36 @@ def _collect_item_source_ids(items: Any) -> set[str]:
 
 
 def _expected_entries(summary: DiffSummary, chunks: list[DiffChunk]) -> list[ChangeEntry]:
+    index_map = _get_file_index_map(summary)
     entries: list[ChangeEntry] = []
     seen: set[str] = set()
     for chunk in chunks:
-        for entry in build_change_manifest(summary, chunk):
-            if entry.source_id in seen:
-                continue
-            seen.add(entry.source_id)
-            entries.append(entry)
+        for file_info in chunk.files:
+            path = _file_path(file_info)
+            file_index = index_map.get(path) or _fallback_file_index(summary, file_info)
+            for entry in _file_entries(file_info, file_index):
+                if is_compound_raw_diff_summary(entry.description):
+                    continue
+                if entry.source_id in seen:
+                    continue
+                seen.add(entry.source_id)
+                entries.append(entry)
     return entries
 
 
 def _summary_entries_by_path(summary: DiffSummary) -> dict[str, list[ChangeEntry]]:
-    return {
+    cached = getattr(summary, "_cached_entries_by_path", None)
+    if cached is not None:
+        return cached
+    result = {
         _file_path(file_info): _file_entries(file_info, file_index)
         for file_index, file_info in enumerate(summary.files, start=1)
     }
+    try:
+        summary._cached_entries_by_path = result
+    except Exception:
+        pass
+    return result
 
 
 def _file_entries(file_info: dict[str, Any], file_index: int) -> list[ChangeEntry]:

@@ -268,7 +268,8 @@ class UpdateScheduler:
                 try:
                     last_pc_check = now_ts
                     self._next_check_at = (beijing_now() + timedelta(seconds=pc_interval)).isoformat()
-                    await self.trigger_check(trigger_mode="scheduled", target="pc")
+                    # 彻底异步非阻塞创建后台分析任务，绝不阻塞调度轮询循环与 WebUI HTTP 响应
+                    asyncio.create_task(self._safe_bg_trigger_check("scheduled", "pc"))
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
@@ -279,7 +280,8 @@ class UpdateScheduler:
                 try:
                     last_mobile_check = now_ts
                     self._next_mobile_check_at = (beijing_now() + timedelta(seconds=mobile_interval)).isoformat()
-                    await self.trigger_check(trigger_mode="scheduled", target="mobile")
+                    # 彻底异步非阻塞创建后台分析任务，绝不阻塞调度轮询循环与 WebUI HTTP 响应
+                    asyncio.create_task(self._safe_bg_trigger_check("scheduled", "mobile"))
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:
@@ -292,6 +294,12 @@ class UpdateScheduler:
                 pass
             except asyncio.CancelledError:
                 break
+
+    async def _safe_bg_trigger_check(self, trigger_mode: str, target: str) -> None:
+        try:
+            await self.trigger_check(trigger_mode=trigger_mode, target=target)
+        except Exception as exc:
+            _logger.error(f"后台定时检查任务执行异常 ({target}): {exc}")
 
     async def retry_last_task(self, target: str = "pc") -> str:
         """重试上一次执行的任务。"""
@@ -335,6 +343,12 @@ class UpdateScheduler:
         self._active_target = target_norm
         task_info = self.current_mobile_task_info if target_norm == "mobile" else self.current_task_info
         git_mgr = self.git_manager_mobile if target_norm == "mobile" else self.git_manager
+
+        if self._lock.locked():
+            if trigger_mode == "scheduled":
+                _logger.info(f"调度器跳过本次定时检查: 当前已有分析任务正在执行 (target={target_norm})")
+                return ""
+            raise RuntimeError("当前已有分析任务正在执行中，请等待完成")
 
         async with self._lock:
             task_id = f"task_{int(time.time() * 1000)}"
@@ -412,6 +426,7 @@ class UpdateScheduler:
                 branch=branch,
                 render_scale=render_scale,
                 target_game=target_norm,
+                enable_ai_analysis=bool(config_dict.get("enable_ai_analysis", False)),
             )
             analyzer = DatamineAnalyzer(cfg)
             self.log(f"目标仓库: {cfg.repo_full_name} ({cfg.branch}) · 使用模型: {cfg.model} · 清晰度档位: {render_scale}", target=target_norm)
@@ -469,7 +484,7 @@ class UpdateScheduler:
 
                     # 2. 如果本地 Git 仓库可用，检查是否需要同步增量提交
                     if git_mgr.is_local_repo_ready():
-                        commits = git_mgr.get_commits(cfg.branch, limit=10)
+                        commits = await asyncio.to_thread(git_mgr.get_commits, cfg.branch, limit=10)
                         local_head = commits[0]["sha"] if commits else ""
                         need_sync = (not commits) or (remote_sha and local_head != remote_sha) or (trigger_mode != "scheduled")
                         if need_sync:
@@ -480,7 +495,7 @@ class UpdateScheduler:
                                 cfg.branch,
                             )
                             if sync_ok:
-                                commits = git_mgr.get_commits(cfg.branch, limit=10)
+                                commits = await asyncio.to_thread(git_mgr.get_commits, cfg.branch, limit=10)
                             else:
                                 self.log("本地 Git fetch 失败，尝试继续使用现有数据或 API 回退", level="WARNING", target=target_norm)
                         if commits:
@@ -501,7 +516,7 @@ class UpdateScheduler:
                             cfg.branch,
                         )
                         if sync_ok and git_mgr.is_local_repo_ready():
-                            commits = git_mgr.get_commits(cfg.branch, limit=10)
+                            commits = await asyncio.to_thread(git_mgr.get_commits, cfg.branch, limit=10)
                         else:
                             commits = await asyncio.to_thread(
                                 analyzer.github_client.get_commits,
@@ -573,7 +588,8 @@ class UpdateScheduler:
                 )
 
                 self._set_stage("正在保存报告与更新状态", 95, target=target_norm)
-                report_id = self.store.save_report(
+                report_id = await asyncio.to_thread(
+                    self.store.save_report,
                     report_dict,
                     trigger_mode=trigger_mode,
                     commit_base=base_sha,

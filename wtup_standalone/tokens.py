@@ -62,9 +62,14 @@ def _split_file_group_by_token_limit(
     files: list[dict[str, Any]],
     limit: int,
 ) -> list[list[dict[str, Any]]]:
+    total_chars = sum(file_patch_chars(item) for item in files)
+    # 快速路径：若字符总长度明显低于 token 上限，则不可能超限，无需昂贵的全量 prompt 构建与分词预估
+    if total_chars + 5000 < limit:
+        return [files]
+
     if len(files) <= 1:
         if files:
-            single = DiffChunk(index=1, total=1, files=files, patch_chars=sum(file_patch_chars(item) for item in files))
+            single = DiffChunk(index=1, total=1, files=files, patch_chars=total_chars)
             tokens = estimate_chunk_input_tokens(settings, summary, single)
             if tokens > limit:
                 logger.warning(
@@ -76,7 +81,7 @@ def _split_file_group_by_token_limit(
                 )
         return [files]
 
-    probe = DiffChunk(index=1, total=1, files=files, patch_chars=sum(file_patch_chars(item) for item in files))
+    probe = DiffChunk(index=1, total=1, files=files, patch_chars=total_chars)
     if estimate_chunk_input_tokens(settings, summary, probe) <= limit:
         return [files]
 

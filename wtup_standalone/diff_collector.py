@@ -189,18 +189,21 @@ def _split_file_groups_by_char_limit(
     return _split_file_groups_by_balanced_chars(groups, chunk_count)
 
 
+MAX_SPLIT_CHUNKS = 50
+
+
 def _target_chunk_count(files: list[dict[str, Any]], *, max_chars: int = 0) -> int:
     file_count = len(files)
     total_chars = sum(_file_patch_chars(file_info) for file_info in files)
     by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
-    return max(1, min(file_count, by_chars))
+    return max(1, min(file_count, min(by_chars, MAX_SPLIT_CHUNKS)))
 
 
 def _target_group_chunk_count(groups: list[list[dict[str, Any]]], *, max_chars: int = 0) -> int:
     group_count = len(groups)
     total_chars = sum(_file_group_patch_chars(group) for group in groups)
     by_chars = (total_chars + max_chars - 1) // max_chars if max_chars > 0 else 1
-    return max(1, min(group_count, by_chars))
+    return max(1, min(group_count, min(by_chars, MAX_SPLIT_CHUNKS)))
 
 
 def _split_files_by_balanced_chars(files: list[dict[str, Any]], chunk_count: int) -> list[list[dict[str, Any]]]:

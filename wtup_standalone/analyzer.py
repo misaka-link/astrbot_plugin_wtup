@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from .diff_collector import (
     DiffChunk,
     DiffSummary,
     build_diff_summary,
+    normalize_report_title,
     parse_unified_diff,
     render_chunk_input,
     short_sha,
@@ -87,7 +89,8 @@ class DatamineAnalyzer:
             "files": [],
         }
 
-        summary = build_diff_summary(
+        summary = await asyncio.to_thread(
+            build_diff_summary,
             compare_payload,
             raw_diff_text=diff_text,
             max_files=self.config.max_files_per_chunk,
@@ -128,8 +131,9 @@ class DatamineAnalyzer:
             analysis = cached.merged_analysis or cached.analysis
             return self._build_result(analysis, cached.token_usage, started_at=started_at)
 
-        # 获取 compare 数据
-        compare_res = self.github_cache.get_compare(
+        # 获取 compare 数据 (异步线程拉取，杜绝主事件循环阻塞)
+        compare_res = await asyncio.to_thread(
+            self.github_cache.get_compare,
             target_repo,
             base_sha,
             head_sha,
@@ -137,8 +141,9 @@ class DatamineAnalyzer:
         )
         compare_payload = compare_res.value
 
-        # 获取 diff 文本
-        diff_res = self.github_cache.get_diff(
+        # 获取 diff 文本 (异步线程拉取，杜绝大文本读取卡死)
+        diff_res = await asyncio.to_thread(
+            self.github_cache.get_diff,
             target_repo,
             base_sha,
             head_sha,
@@ -146,7 +151,8 @@ class DatamineAnalyzer:
         )
         raw_diff_text = diff_res.value
 
-        summary = build_diff_summary(
+        summary = await asyncio.to_thread(
+            build_diff_summary,
             compare_payload,
             raw_diff_text=raw_diff_text,
             max_files=self.config.max_files_per_chunk,
@@ -184,21 +190,26 @@ class DatamineAnalyzer:
         """核心分析执行链路。"""
         check_task_termination(self.config, "分析流水线启动")
 
-        # 如果开启了 datamine 纯净树状模式，优先进行高精度确定性特征提取与图片嗅探
         datamine_text = ""
         resolved_images = []
-        raw_diff = "\n".join(
-            f"diff --git a/{f.get('filename')} b/{f.get('filename')}\n{f.get('patch') or ''}"
-            for f in summary.files
-        )
+
+        # 如果开启了 datamine 纯净树状模式，优先进行高精度确定性特征提取与图片嗅探 (放入后台线程执行，避免阻塞主循环)
         if getattr(self.config, "report_style", "datamine") == "datamine":
-            from .wt_extractor import DatamineFactExtractor
-            from .datamine_formatter import format_datamine_report
-            from .image_resolver import WarThunderImageResolver
-            extractor = DatamineFactExtractor()
-            facts = extractor.extract_facts(raw_diff, summary)
-            datamine_text = format_datamine_report(facts, bilingual=True)
-            resolved_images = WarThunderImageResolver.find_images_in_facts(facts, raw_diff)
+            def _extract_datamine_sync():
+                raw_diff = "\n".join(
+                    f"diff --git a/{f.get('filename')} b/{f.get('filename')}\n{f.get('patch') or ''}"
+                    for f in summary.files
+                )
+                from .wt_extractor import DatamineFactExtractor
+                from .datamine_formatter import format_datamine_report
+                from .image_resolver import WarThunderImageResolver
+                extractor = DatamineFactExtractor()
+                facts = extractor.extract_facts(raw_diff, summary)
+                datamine_text = format_datamine_report(facts, bilingual=True)
+                resolved_images = WarThunderImageResolver.find_images_in_facts(facts, raw_diff)
+                return facts, datamine_text, resolved_images
+
+            facts, datamine_text, resolved_images = await asyncio.to_thread(_extract_datamine_sync)
 
             if facts.is_nothingburger:
                 analysis = {
@@ -212,11 +223,69 @@ class DatamineAnalyzer:
                 }
                 return self._build_result(analysis, TokenUsage(), started_at=started_at)
 
-        # 1. 细分大 CSV
-        subdivide_summary_csv_files(self.config, summary)
+            enable_ai = bool(getattr(self.config, "enable_ai_analysis", False))
+            has_api_key = bool(getattr(self.config, "api_key", ""))
 
-        # 2. 按 token 上限智能切片
-        split_summary = split_chunks_by_token_limit(self.config, summary)
+            # 纯净模式：若未开启 AI 战术研判或无 API Key，直接由高精特征抽取生成完整报告（零 LLM、秒级完成、绝不卡死 CPU）
+            if not enable_ai or not has_api_key:
+                vehicle_count = len(facts.new_vehicles)
+                tags = ["拆包更新", "数据挖掘"]
+                if vehicle_count > 0:
+                    tags.append("新增载具")
+                if facts.loadout_changes:
+                    tags.append("挂载调整")
+                if facts.mechanics_changes:
+                    tags.append("机制改动")
+
+                title = facts.version_range or normalize_report_title(summary, "") or "War Thunder Datamine"
+                summary_text = f"版本更新 {title}"
+                if vehicle_count > 0:
+                    summary_text += f"（包含 {vehicle_count} 项新载具数据）"
+
+                analysis = {
+                    "report_title": title,
+                    "summary": summary_text,
+                    "importance": "高" if vehicle_count > 0 else "中",
+                    "update_sections": [],
+                    "tags": tags,
+                    "datamine_text": datamine_text,
+                    "images": resolved_images,
+                }
+                return self._build_result(analysis, TokenUsage(), started_at=started_at)
+
+            # 若开启 AI 战术研判且已配置有效模型 Key，基于已提取的技术树摘要生成单次专业研判 (避免千次切片重载)
+            ai_analysis, ai_summary, usage = await self._generate_ai_analysis_from_datamine(facts, datamine_text)
+            vehicle_count = len(facts.new_vehicles)
+            tags = ["拆包更新", "数据挖掘"]
+            if vehicle_count > 0:
+                tags.append("新增载具")
+            if facts.loadout_changes:
+                tags.append("挂载调整")
+            if facts.mechanics_changes:
+                tags.append("机制改动")
+
+            title = facts.version_range or normalize_report_title(summary, "") or "War Thunder Datamine"
+            summary_text = ai_summary or f"版本更新 {title}"
+            if vehicle_count > 0 and not ai_summary:
+                summary_text += f"（包含 {vehicle_count} 项新载具数据）"
+
+            analysis = {
+                "report_title": title,
+                "summary": summary_text,
+                "importance": "高" if vehicle_count > 0 else "中",
+                "update_sections": [],
+                "tags": tags,
+                "ai_analysis": ai_analysis,
+                "datamine_text": datamine_text,
+                "images": resolved_images,
+            }
+            return self._build_result(analysis, usage, started_at=started_at)
+
+        # 1. 细分大 CSV (异步线程执行，避免阻塞主循环)
+        await asyncio.to_thread(subdivide_summary_csv_files, self.config, summary)
+
+        # 2. 按 token 上限智能切片 (异步线程执行)
+        split_summary = await asyncio.to_thread(split_chunks_by_token_limit, self.config, summary)
 
         # 3. 分片调用大模型分析
         chunk_results = await analyze_chunks(
@@ -264,9 +333,58 @@ class DatamineAnalyzer:
 
         return self._build_result(final_analysis, total_usage, started_at=started_at)
 
-    def _build_result(self, analysis: dict[str, Any], token_usage: TokenUsage, *, started_at: float) -> AnalysisResult:
+    async def _generate_ai_analysis_from_datamine(
+        self, facts: Any, datamine_text: str
+    ) -> tuple[dict[str, Any], str, TokenUsage]:
+        """针对 datamine 模式，基于高密度技术树事实生成单次 AI 战术研判与深度推演。"""
+        excerpt = datamine_text[:40000] if len(datamine_text) > 40000 else datamine_text
+        prompt = (
+            "你是一名专业的《战争雷霆》资深拆包分析专家。\n"
+            "请根据以下战争雷霆版本更新提取的技术树/载具/武器改动数据，进行客观且专业的玩家战术研判与深度推演。\n\n"
+            "输出要求：\n"
+            "1. 只能输出严格合法的单个 JSON 对象，禁止 Markdown 代码块包裹，禁止任何前言或后记。\n"
+            "2. JSON 字段结构如下：\n"
+            "{\n"
+            '  "summary": "一两句话概括本次主要改动",\n'
+            '  "changed_content": ["主要改动点1", "主要改动点2"],\n'
+            '  "player_impact": ["对玩家研发、经济收益、分房权重(BR)或对局战术的具体影响1"],\n'
+            '  "uncertainties": ["暂不明确或需要游戏内实测的内容（若无则为空数组）"],\n'
+            '  "recommendation": "给战争雷霆玩家的核心战术或研发建议"\n'
+            "}\n\n"
+            f"以下是拆包技术树改动数据：\n{excerpt}"
+        )
+        try:
+            from .retry import request_chat_completion_with_retry
+            sem = asyncio.Semaphore(1)
+            raw_text, usage = await request_chat_completion_with_retry(
+                self.llm_context,
+                self.config,
+                prompt,
+                sem,
+                provider_id=self.config.model,
+                purpose="datamine_ai_summary",
+            )
+            clean_text = str(raw_text or "").strip()
+            if clean_text.startswith("```"):
+                lines = clean_text.splitlines()
+                clean_text = "\n".join(lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:])
+            data = json.loads(clean_text)
+            ai_analysis = {
+                "changed_content": data.get("changed_content") if isinstance(data.get("changed_content"), list) else [],
+                "player_impact": data.get("player_impact") if isinstance(data.get("player_impact"), list) else [],
+                "uncertainties": data.get("uncertainties") if isinstance(data.get("uncertainties"), list) else [],
+                "recommendation": str(data.get("recommendation") or ""),
+            }
+            summary_desc = str(data.get("summary") or "")
+            return ai_analysis, summary_desc, usage
+        except Exception as exc:
+            _logger.warning("基于 datamine 文本生成 AI 战术研判失败: %s", exc)
+            return {}, "", TokenUsage()
+
+    def _build_result(self, analysis: dict[str, Any], token_usage: TokenUsage | None, *, started_at: float) -> AnalysisResult:
         ai_analysis = analysis.get("ai_analysis") or {}
         elapsed = time.monotonic() - started_at
+        usage = token_usage if token_usage is not None else TokenUsage()
 
         return AnalysisResult(
             report_title=str(analysis.get("report_title") or ""),
@@ -281,7 +399,7 @@ class DatamineAnalyzer:
             risks=analysis.get("risks") or ai_analysis.get("uncertainties") or [],
             recommendation=str(analysis.get("recommendation") or ai_analysis.get("recommendation") or ""),
             tags=analysis.get("tags") or [],
-            token_usage=token_usage,
+            token_usage=usage,
             coverage=analysis.get("coverage") or {},
             raw_analysis=analysis,
             images=analysis.get("images") or [],

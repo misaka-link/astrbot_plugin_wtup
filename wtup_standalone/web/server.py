@@ -92,6 +92,7 @@ class WebApp:
             try:
                 await writer.drain()
                 writer.close()
+                await writer.wait_closed()
             except Exception:
                 pass
 
@@ -576,6 +577,10 @@ class WebApp:
                 self.store.save_config({"schedule_enabled": enabled})
                 self._send_json(writer, 200, {"target": "pc", "schedule_enabled": enabled})
             return
+
+    async def _fetch_remote_models(self, base_url: str, api_key: str = "") -> list[str]:
+        url = f"{base_url.rstrip('/')}/models"
+        headers = {"User-Agent": "wtup-web/1.0"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
