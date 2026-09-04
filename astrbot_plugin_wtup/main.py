@@ -390,7 +390,7 @@ class WTUpdateClient(Star):
         if text:
             chain.message(text)
         if image_bytes:
-            chain.message(self._build_image_component(image_bytes))
+            self._append_image_to_chain(chain, image_bytes)
         await event.send(chain)
 
     async def _collect_call_targets(self) -> list[Any]:
@@ -475,7 +475,7 @@ class WTUpdateClient(Star):
         if text:
             chain.message(text)
         if image_bytes:
-            chain.message(self._build_image_component(image_bytes))
+            self._append_image_to_chain(chain, image_bytes)
 
         if hasattr(self.context, "send_message"):
             try:
@@ -485,6 +485,33 @@ class WTUpdateClient(Star):
                 logger.debug("[%s] context.send_message 异常: %s", PLUGIN_NAME, exc)
 
         raise RuntimeError(f"无法向目标 {target} 发送消息：未找到适用的发送渠道")
+
+    def _append_image_to_chain(self, chain: MessageChain, image_bytes: bytes) -> None:
+        """向 MessageChain 安全追加图片组件，杜绝 Plain 校验类型错误。"""
+        if not image_bytes:
+            return
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(image_bytes)
+            tmp.close()
+            if hasattr(chain, "file_image"):
+                chain.file_image(tmp.name)
+                return
+        except Exception:
+            pass
+
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        if hasattr(chain, "base64_image"):
+            chain.base64_image(b64)
+        elif hasattr(chain, "chain"):
+            img = self._build_image_component(image_bytes)
+            chain.chain.append(img)
+        else:
+            try:
+                img = self._build_image_component(image_bytes)
+                chain.message(img)
+            except Exception:
+                pass
 
     def _build_image_component(self, image_bytes: bytes) -> Any:
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
