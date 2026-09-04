@@ -334,7 +334,7 @@ def _build_mobile_html_report(
             i_type = html.escape(str(img.get("type") or "美术资产"))
             cards.append(f'''
             <div class="asset-card">
-                <div class="asset-img-box"><img src="{i_url}" alt="{i_name}" loading="lazy" /></div>
+                <div class="asset-img-box"><img src="{i_url}" alt="{i_name}" onerror="this.style.opacity=0.4" /></div>
                 <div class="asset-name" title="{i_name}">{i_name}</div>
                 <span class="asset-type">{i_type}</span>
             </div>
@@ -897,7 +897,7 @@ def _build_discord_html_report(
             i_type = html.escape(str(img.get("type") or "贴花"))
             cards.append(f'''
             <div class="asset-card">
-                <div class="asset-img-box"><img src="{i_url}" alt="{i_name}" loading="lazy" /></div>
+                <div class="asset-img-box"><img src="{i_url}" alt="{i_name}" onerror="this.style.opacity=0.4" /></div>
                 <div class="asset-name" title="{i_name}">{i_name}</div>
                 <span class="asset-type">{i_type}</span>
             </div>
@@ -1418,7 +1418,7 @@ def _build_miku_html_report(
             img_type = html.escape(str(img.get("type") or "贴花/图标"))
             cards.append(f'''
             <div class="miku-image-card">
-                <div class="miku-img-box"><img src="{img_url}" alt="{img_name}" loading="lazy" /></div>
+                <div class="miku-img-box"><img src="{img_url}" alt="{img_name}" onerror="this.style.opacity=0.4" /></div>
                 <div class="image-caption">{img_name}</div>
                 <span class="miku-badge miku-pill">{img_type}</span>
             </div>
@@ -1726,6 +1726,8 @@ async def render_report_to_image(
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-gpu")
                 options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--allow-file-access-from-files")
+                options.add_argument("--disable-web-security")
                 options.add_argument("--window-size=1200,1200")
                 options.add_argument(f"--force-device-scale-factor={scale_factor}")
                 driver = webdriver.Chrome(options=options)
@@ -1733,9 +1735,51 @@ async def render_report_to_image(
                     driver.get(f"file://{tmp_html}")
                     try:
                         target = driver.find_element(By.ID, target_canvas_id)
-                        return target.screenshot_as_png
                     except Exception:
-                        return driver.find_element(By.TAG_NAME, "body").screenshot_as_png
+                        target = driver.find_element(By.TAG_NAME, "body")
+
+                    # 1. 动态自适应视口尺寸：防止超出 1200px 时被 Chromium 视口硬性裁剪
+                    req_w = max(1200, int(target.size.get("width", 840) + target.location.get("x", 0) * 2 + 100))
+                    req_h = max(1200, int(target.size.get("height", 1200) + target.location.get("y", 0) + 150))
+                    driver.set_window_size(req_w, req_h)
+
+                    # 2. 等待外部网络图片与字体加载完毕 (最长等待 6 秒，完成即提前回调)
+                    try:
+                        driver.execute_async_script("""
+                            var callback = arguments[arguments.length - 1];
+                            var imgs = Array.from(document.images);
+                            if (imgs.length === 0) { callback(); return; }
+                            var count = 0;
+                            var finished = false;
+                            function doneOne() {
+                                if (finished) return;
+                                count++;
+                                if (count >= imgs.length) {
+                                    finished = true;
+                                    callback();
+                                }
+                            }
+                            setTimeout(function() {
+                                if (!finished) { finished = true; callback(); }
+                            }, 6000);
+                            imgs.forEach(function(img) {
+                                if (img.complete) {
+                                    doneOne();
+                                } else {
+                                    img.addEventListener('load', doneOne);
+                                    img.addEventListener('error', doneOne);
+                                }
+                            });
+                        """)
+                    except Exception:
+                        pass
+
+                    # 3. 再次获取自适应高度（图片全部加载后内容高度可能撑开）
+                    final_h = max(req_h, int(target.size.get("height", 1200) + target.location.get("y", 0) + 150))
+                    if final_h > req_h:
+                        driver.set_window_size(req_w, final_h)
+
+                    return target.screenshot_as_png
                 finally:
                     driver.quit()
 
