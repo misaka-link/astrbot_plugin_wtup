@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+.DS_Store
+.git
+.gitignore
+.pytest_cache
+data/
+cache/

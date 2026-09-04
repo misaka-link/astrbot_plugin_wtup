@@ -1,0 +1,6 @@
+name: astrbot_plugin_wtup
+display_name: War Thunder 更新推送客户端 (API版)
+desc: 轻量级推送客户端，定时查询本地/远程 WTUP 后台 API，自动推送最新 Datamine 更新报告长图与更新摘要。
+version: v1.0.0
+author: 御坂_20001
+repo: "https://github.com/misaka-link/astrbot_plugin_wtup"

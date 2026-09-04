@@ -1,0 +1,26 @@
+services:
+  wtup-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wtup-datamine-monitor
+    restart: unless-stopped
+    ports:
+      # 外部端口 1883 映射到容器内部 8080 端口
+      - "1883:8080"
+    environment:
+      # 统一北京时区 (Asia/Shanghai, UTC+8)
+      - TZ=Asia/Shanghai
+      
+      # 运行端口与持久化数据目录 (OpenAI 接口地址、API Key、模型等均在 WebUI 界面中配置，不在此硬编码)
+      - PORT=8080
+      - DATA_DIR=/app/data
+      
+      # 自动化定时更新检查周期 (单位: 分钟)
+      - CHECK_INTERVAL_MINUTES=15
+      
+      # 模型自主多轮工具调用上限 (默认 5 轮)
+      - MAX_TOOL_CALL_ROUNDS=5
+    volumes:
+      # 持久化挂载目录：保存系统设置、历史分析报告、图片与本地 Git 仓库
+      - ./data:/app/data

@@ -1,0 +1,62 @@
+{
+  "api_base_url": {
+    "type": "string",
+    "description": "WTUP 后台 API 服务地址",
+    "hint": "wtup 独立分析服务或 Docker 容器的访问地址，例如 http://10.10.10.99:1883",
+    "default": "http://10.10.10.99:1883"
+  },
+  "interval_minutes": {
+    "type": "int",
+    "description": "端游 API 定时查询周期 (分钟)",
+    "hint": "每隔多少分钟向后台 API 查询一次端游更新结果，默认 5 分钟",
+    "default": 5
+  },
+  "push_targets": {
+    "type": "list",
+    "description": "端游推送目标群聊/用户列表",
+    "hint": "接收端游更新推送的群号或用户，格式如 123456 或 qq:group:123456",
+    "default": []
+  },
+  "enable_mobile_push": {
+    "type": "bool",
+    "description": "是否开启手游更新推送",
+    "hint": "开启后将独立监控 War Thunder Mobile Datamine 并推送到手游专属群聊",
+    "default": false
+  },
+  "mobile_interval_minutes": {
+    "type": "int",
+    "description": "手游 API 定时查询周期 (分钟)",
+    "hint": "每隔多少分钟向后台 API 查询一次手游更新结果，默认 5 分钟",
+    "default": 5
+  },
+  "mobile_push_targets": {
+    "type": "list",
+    "description": "手游推送目标群聊/用户列表",
+    "hint": "接收手游更新推送的群号或用户列表，与端游推送完全独立隔离",
+    "default": []
+  },
+  "render_template": {
+    "type": "string",
+    "description": "报告图片模板选择",
+    "hint": "选择获取图片报告的排版风格：discord (黑暗风格，默认) 或 miku (初音风格)",
+    "default": "discord"
+  },
+  "enable_push_image": {
+    "type": "bool",
+    "description": "是否推送高清长图报告",
+    "hint": "从后台 API 自动下载高清渲染长图并发送",
+    "default": true
+  },
+  "enable_push_text": {
+    "type": "bool",
+    "description": "是否附带文字摘要",
+    "hint": "在图片上方附带简要版本号、标签与概要说明",
+    "default": true
+  },
+  "admin_targets": {
+    "type": "list",
+    "description": "管理员白名单",
+    "hint": "允许执行 /wtup_check 强制检查命令的 QQ 号或用户 ID",
+    "default": []
+  }
+}

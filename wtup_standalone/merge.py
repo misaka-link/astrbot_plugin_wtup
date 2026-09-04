@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+import logging
+logger = logging.getLogger("wtup_standalone")
+
+
+from .diff_collector import DiffChunk, DiffSummary, normalize_report_title
+from .fallback import fallback_analysis
+from .models import ChunkAnalysis
+from .normalize import (
+    BULK_REPEAT_KEYS,
+    clean_pagination_text,
+    normalize_analysis,
+    normalize_importance,
+    normalize_suspected_hallucinations,
+    normalize_update_items,
+)
+
+
+MERGED_AI_ANALYSIS_ITEM_LIMIT = 50
+
+
+def merge_chunk_analyses(
+    summary: DiffSummary,
+    chunks: list[DiffChunk],
+    results: list[ChunkAnalysis],
+) -> dict[str, Any]:
+    ordered_results = order_chunk_results(chunks, results)
+    analyses = [coerce_analysis(result.analysis) for result in ordered_results]
+
+    report_title = normalize_report_title(summary, first_text(analysis.get("report_title") for analysis in analyses))
+    importance = max_importance(analysis.get("importance") for analysis in analyses)
+    tags = unique_preserve_order(tag for analysis in analyses for tag in analysis.get("tags", []))
+    update_sections = merge_update_sections(analyses)
+    bulk_repeat_content = merge_bulk_repeat_content(analyses)
+    suspected_hallucinations = merge_suspected_hallucinations(analyses)
+
+    changed_content = unique_preserve_order(
+        clean_pagination_text(item)
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("changed_content", [])
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
+    player_impact = unique_preserve_order(
+        clean_pagination_text(item)
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("player_impact", [])
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
+    uncertainties = unique_preserve_order(
+        clean_pagination_text(item)
+        for analysis in analyses
+        for item in get_ai_analysis(analysis).get("uncertainties", [])
+    )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
+    if any(result.error for result in ordered_results):
+        uncertainties = unique_preserve_order(
+            [*uncertainties, "部分文件模型分析失败，需要结合 GitHub 原始 diff 复核。"]
+        )[:MERGED_AI_ANALYSIS_ITEM_LIMIT]
+
+    recommendation = first_recommendation_by_importance(analyses) or "建议关注本次更新，并结合游戏内实装情况复核。"
+    summary_text = f"本次更新共 {summary.total_files} 个文件。"
+    if summary.total_commits:
+        summary_text = f"本次更新包含 {summary.total_commits} 个提交、{summary.total_files} 个文件。"
+
+    return normalize_analysis(
+        {
+            "report_title": report_title,
+            "summary": summary_text,
+            "importance": importance,
+            "update_sections": update_sections,
+            "bulk_repeat_content": bulk_repeat_content,
+            "suspected_hallucinations": suspected_hallucinations,
+            "ai_analysis": {
+                "changed_content": changed_content,
+                "player_impact": player_impact,
+                "uncertainties": uncertainties,
+                "recommendation": recommendation,
+            },
+            "tags": tags,
+        }
+    )
+
+def order_chunk_results(chunks: list[DiffChunk], results: list[ChunkAnalysis]) -> list[ChunkAnalysis]:
+    result_map = {result.chunk_index: result for result in results}
+    ordered: list[ChunkAnalysis] = []
+    for chunk in sorted(chunks, key=lambda item: item.index):
+        result = result_map.get(chunk.index)
+        if result is None:
+            ordered.append(
+                ChunkAnalysis(
+                    chunk.index,
+                    chunk.total,
+                    fallback_analysis("部分文件未获得模型分析结果，需要结合 GitHub 原始 diff 复核。"),
+                    error="missing analysis result",
+                )
+            )
+        else:
+            ordered.append(result)
+    return ordered
+
+def coerce_analysis(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        try:
+            return normalize_analysis(value)
+        except Exception as exc:
+            logger.warning("[%s] 标准化模型结果失败: %s", "wtup_standalone", exc)
+    return fallback_analysis("模型分析结果结构异常，需要结合 GitHub 原始 diff 复核。")
+
+def merge_update_sections(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index_by_title: dict[str, int] = {}
+    for analysis in analyses:
+        for section in analysis.get("update_sections", []):
+            if not isinstance(section, dict):
+                continue
+            title = clean_section_title(section.get("title"))
+            items = normalize_update_items(section.get("items"), limit=200)
+            if not items:
+                continue
+            if title not in index_by_title:
+                index_by_title[title] = len(merged)
+                merged.append({"title": title, "items": []})
+            merged[index_by_title[title]]["items"].extend(items)
+
+    for section in merged:
+        section["items"] = dedupe_update_items(section["items"])
+    return merged or [{"title": "更新内容", "items": [{"text": "本次更新没有可展示的更新条目。", "children": []}]}]
+
+def merge_bulk_repeat_content(analyses: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {key: [] for key in BULK_REPEAT_KEYS}
+    for analysis in analyses:
+        content = analysis.get("bulk_repeat_content") if isinstance(analysis.get("bulk_repeat_content"), dict) else {}
+        for key in BULK_REPEAT_KEYS:
+            items = normalize_update_items(content.get(key), limit=300)
+            if items:
+                result[key].extend(items)
+    return {key: dedupe_update_items(items) for key, items in result.items()}
+
+def merge_suspected_hallucinations(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for analysis in analyses:
+        items.extend(normalize_suspected_hallucinations(analysis.get("suspected_hallucinations")))
+    return normalize_suspected_hallucinations(items)
+
+def clean_section_title(value: Any) -> str:
+    title = str(value or "").strip()
+    if not title:
+        return "其他变化"
+    normalized = re.sub(r"\s+", "", title).lower()
+    if re.fullmatch(r"(part\d+(/\d+)?|第?\d+(批|部分|分片)|分片\d+(/\d+)?)", normalized):
+        return "其他变化"
+    if "分片" in title or re.search(r"\bpart\s*\d+", title, flags=re.I):
+        return "其他变化"
+    return title
+
+def dedupe_update_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    index_by_text: dict[str, int] = {}
+    for item in items:
+        text = clean_pagination_text(item.get("text")) if isinstance(item, dict) else ""
+        if not text:
+            continue
+        children = item.get("children") if isinstance(item.get("children"), list) else []
+        source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+        if text in seen:
+            existing = result[index_by_text[text]]
+            existing["source_ids"] = unique_preserve_order(
+                [*existing.get("source_ids", []), *source_ids]
+            )
+            existing["children"] = dedupe_update_items([*existing.get("children", []), *children])
+            if not existing["source_ids"]:
+                existing.pop("source_ids", None)
+            continue
+        seen.add(text)
+        index_by_text[text] = len(result)
+        normalized = {"text": text, "children": dedupe_update_items(children)}
+        source_ids = unique_preserve_order(source_ids)
+        if source_ids:
+            normalized["source_ids"] = source_ids
+        result.append(normalized)
+    return result
+
+def get_ai_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    value = analysis.get("ai_analysis")
+    return value if isinstance(value, dict) else {}
+
+def max_importance(values: Any) -> str:
+    rank = {"低": 0, "中": 1, "高": 2}
+    best = "低"
+    for value in values:
+        normalized = normalize_importance(value)
+        if rank[normalized] > rank[best]:
+            best = normalized
+    return best
+
+def first_recommendation_by_importance(analyses: list[dict[str, Any]]) -> str:
+    rank = {"低": 0, "中": 1, "高": 2}
+    ordered = sorted(analyses, key=lambda item: rank.get(normalize_importance(item.get("importance")), 1), reverse=True)
+    for analysis in ordered:
+        recommendation = str(get_ai_analysis(analysis).get("recommendation") or analysis.get("recommendation") or "").strip()
+        if recommendation:
+            return recommendation
+    return ""
+
+def first_text(values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+def unique_preserve_order(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result

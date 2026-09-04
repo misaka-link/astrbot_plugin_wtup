@@ -1,6 +1,23 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-.data/
+*$py.class
+
+# Caches and testing
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
 .venv/
 venv/
+ENV/
+
+# Runtime data & temp files
+.data/
+data/
+*.log
+
+# Local private ops documentation
+BAOTA_MCP_USAGE.md
+

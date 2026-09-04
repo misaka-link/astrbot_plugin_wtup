@@ -1,0 +1,1573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WTUP - War Thunder Datamine 分析中心</title>
+  <!-- Google Fonts & Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Vue 3 CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- html2canvas 用于客户端快速截图 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen selection:bg-blue-100 selection:text-blue-900">
+  <div id="app" class="min-h-screen flex flex-col" v-cloak>
+
+    <!-- ========================================================================= -->
+    <!-- 1. 移动端顶部顶栏 (Mobile Only App Bar: 仅在小屏手机显示)                     -->
+    <!-- ========================================================================= -->
+    <header class="md:hidden sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-xs">
+      <div class="flex items-center gap-2.5">
+        <button @click="mobileMenuOpen = true" class="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition focus:outline-none" aria-label="打开侧边菜单">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+          </svg>
+        </button>
+        <div>
+          <div class="font-bold text-sm text-slate-900 leading-tight">WTUP Datamine</div>
+          <div class="text-[11px] text-slate-500 font-mono">v0.1.0</div>
+        </div>
+      </div>
+
+      <!-- 移动端端游/手游切换与任务状态徽章 -->
+      <div class="flex items-center gap-2">
+        <div class="inline-flex p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs">
+          <button @click="switchTarget('pc')"
+            class="px-2 py-0.5 font-bold rounded transition"
+            :class="activeTarget === 'pc' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500'">
+            🎮 端游
+          </button>
+          <button @click="switchTarget('mobile')"
+            class="px-2 py-0.5 font-bold rounded transition"
+            :class="activeTarget === 'mobile' ? 'bg-blue-600 text-white shadow-2xs' : 'text-slate-500'">
+            📱 手游
+          </button>
+        </div>
+        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer"
+          @click="currentTab = 'tasks'"
+          :class="{
+            'bg-blue-50 border-blue-200 text-blue-700': task.status === 'running',
+            'bg-rose-50 border-rose-200 text-rose-700': task.status === 'failed',
+            'bg-emerald-50 border-emerald-200 text-emerald-700': task.status === 'completed',
+            'bg-slate-100 border-slate-200 text-slate-600': task.status === 'idle'
+          }">
+          <span class="relative flex h-2 w-2">
+            <span v-if="task.status === 'running'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2 w-2"
+              :class="{
+                'bg-blue-500': task.status === 'running',
+                'bg-rose-500': task.status === 'failed',
+                'bg-emerald-500': task.status === 'completed',
+                'bg-slate-400': task.status === 'idle',
+              }"></span>
+          </span>
+          <span class="font-medium text-[11px]">{{ statusDisplay }}</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ========================================================================= -->
+    <!-- 2. 移动端抽屉遮罩与侧边栏 (Mobile Drawer)                                    -->
+    <!-- ========================================================================= -->
+    <div v-if="mobileMenuOpen" class="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-xs md:hidden" @click="mobileMenuOpen = false"></div>
+    <div class="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-white shadow-2xl flex flex-col transition-transform duration-300 md:hidden"
+      :class="mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'">
+      <!-- 抽屉头部 -->
+      <div class="p-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <div class="font-bold text-base text-slate-900 leading-tight">WTUP Datamine</div>
+          <div class="text-[11px] text-slate-400">War Thunder 分析平台</div>
+        </div>
+        <button @click="mobileMenuOpen = false" class="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+
+      <!-- 抽屉导航链接 -->
+      <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+        <button v-for="tab in tabs" :key="tab.id"
+          @click="currentTab = tab.id; mobileMenuOpen = false"
+          class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition text-left"
+          :class="currentTab === tab.id
+            ? 'bg-blue-50 text-blue-600 font-semibold border border-blue-100/80 shadow-xs'
+            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'">
+          <div class="flex items-center gap-2.5">
+            <span v-html="tab.icon"></span>
+            <span>{{ tab.name }}</span>
+          </div>
+          <span v-if="tab.id === 'tasks' && task.status === 'running'" class="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+          <span v-else-if="tab.id === 'tasks' && task.status === 'failed'" class="w-2 h-2 rounded-full bg-rose-500"></span>
+          <span v-else-if="tab.id === 'tasks' && task.status === 'completed'" class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        </button>
+      </nav>
+
+      <!-- 抽屉底部环境信息 (左下角同时展示端游与手游仓库) -->
+      <div class="p-3 m-3 rounded-2xl bg-slate-50 border border-slate-200/70 text-xs space-y-2">
+        <div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-0.5 font-medium">
+            <span>🎮 端游仓库</span>
+            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200/60 text-slate-500">{{ status.repos?.pc?.branch || 'master' }}</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.repos?.pc?.repo || 'gszabi99/War-Thunder-Datamine'">
+            {{ status.repos?.pc?.repo || 'gszabi99/War-Thunder-Datamine' }}
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-0.5 font-medium">
+            <span>📱 手游仓库</span>
+            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200/60 text-slate-500">{{ status.repos?.mobile?.branch || 'master' }}</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.repos?.mobile?.repo || 'gszabi99/War-Thunder-Mobile-Datamine'">
+            {{ status.repos?.mobile?.repo || 'gszabi99/War-Thunder-Mobile-Datamine' }}
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[11px] text-slate-400 mb-0.5 font-medium flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+            <span>分析模型</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.config_summary?.model">
+            {{ status.config_summary?.model || 'deepseek-chat' }}
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-200/60 space-y-1 text-xs">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500 font-medium">{{ activeTarget === 'mobile' ? '手游轮询' : '端游轮询' }}</span>
+            <span class="inline-flex items-center gap-1.5 font-medium px-2 py-0.5 rounded-full text-[11px]" :class="status.schedule_enabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60' : 'bg-slate-100 text-slate-600 border border-slate-200'">
+              <span class="w-1.5 h-1.5 rounded-full" :class="status.schedule_enabled ? 'bg-emerald-500' : 'bg-slate-400'"></span>
+              {{ status.schedule_enabled ? (status.schedule_interval_minutes || 15) + ' 分钟' : '已暂停' }}
+            </span>
+          </div>
+          <div class="flex items-center justify-between pt-0.5">
+            <span class="text-slate-400 text-[10px] font-medium">下次查询</span>
+            <span class="font-mono text-slate-700 font-semibold text-[10px] truncate max-w-[160px]" :title="status.next_check_at ? formatDate(status.next_check_at) : ''">
+              {{ nextCheckTimeDisplay }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 3. PC / 宽屏 固定的左侧边栏 (Fixed Left Sidebar)                             -->
+    <!-- ========================================================================= -->
+    <aside class="hidden md:flex md:w-72 md:flex-col md:fixed md:inset-y-0 bg-white border-r border-slate-200/80 z-30 shadow-[1px_0_4px_0_rgba(0,0,0,0.02)]">
+      <!-- 品牌 Logo 与标题栏 -->
+      <div class="h-16 px-5 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+        <div>
+          <div class="font-bold text-base text-slate-900 leading-tight tracking-tight">WTUP Datamine</div>
+          <div class="text-[11px] text-slate-400 font-medium">战术拆包分析平台</div>
+        </div>
+        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">v0.1.0</span>
+      </div>
+
+      <!-- 导航项列表 -->
+      <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <div class="px-2 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">平台导航</div>
+        <button v-for="tab in tabs" :key="tab.id" @click="currentTab = tab.id"
+          class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm transition text-left group"
+          :class="currentTab === tab.id
+            ? 'bg-blue-50 text-blue-600 font-semibold border border-blue-100 shadow-xs'
+            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium'">
+          <div class="flex items-center gap-3">
+            <span class="transition-colors" :class="currentTab === tab.id ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'" v-html="tab.icon"></span>
+            <span>{{ tab.name }}</span>
+          </div>
+          <span v-if="tab.id === 'tasks' && task.status === 'running'" class="w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+          <span v-else-if="tab.id === 'tasks' && task.status === 'failed'" class="w-2 h-2 rounded-full bg-rose-500"></span>
+          <span v-else-if="tab.id === 'tasks' && task.status === 'completed'" class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        </button>
+      </nav>
+
+      <!-- 侧边栏底部系统环境概况卡片 (左下角同时展示端游与手游仓库) -->
+      <div class="p-3 m-3 rounded-2xl bg-slate-50 border border-slate-200/70 text-xs space-y-2 flex-shrink-0">
+        <div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-0.5 font-medium">
+            <span>🎮 端游仓库</span>
+            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200/60 text-slate-500">{{ status.repos?.pc?.branch || 'master' }}</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.repos?.pc?.repo || 'gszabi99/War-Thunder-Datamine'">
+            {{ status.repos?.pc?.repo || 'gszabi99/War-Thunder-Datamine' }}
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400 mb-0.5 font-medium">
+            <span>📱 手游仓库</span>
+            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200/60 text-slate-500">{{ status.repos?.mobile?.branch || 'master' }}</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.repos?.mobile?.repo || 'gszabi99/War-Thunder-Mobile-Datamine'">
+            {{ status.repos?.mobile?.repo || 'gszabi99/War-Thunder-Mobile-Datamine' }}
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[11px] text-slate-400 mb-0.5 font-medium flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+            <span>分析模型</span>
+          </div>
+          <div class="font-mono text-slate-800 font-medium text-[11px] truncate bg-white px-2 py-1 rounded-lg border border-slate-200/70 shadow-2xs" :title="status.config_summary?.model">
+            {{ status.config_summary?.model || 'deepseek-chat' }}
+          </div>
+        </div>
+
+        <div class="pt-2 border-t border-slate-200/60 space-y-1 text-xs">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-500 font-medium">{{ activeTarget === 'mobile' ? '手游轮询' : '端游轮询' }}</span>
+            <span class="inline-flex items-center gap-1.5 font-medium px-2 py-0.5 rounded-full text-[11px]" :class="status.schedule_enabled ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60' : 'bg-slate-100 text-slate-600 border border-slate-200'">
+              <span class="w-1.5 h-1.5 rounded-full" :class="status.schedule_enabled ? 'bg-emerald-500' : 'bg-slate-400'"></span>
+              {{ status.schedule_enabled ? (status.schedule_interval_minutes || 15) + ' 分钟' : '已暂停' }}
+            </span>
+          </div>
+          <div class="flex items-center justify-between pt-0.5">
+            <span class="text-slate-400 text-[10px] font-medium">下次查询</span>
+            <span class="font-mono text-slate-700 font-semibold text-[10px] truncate max-w-[160px]" :title="status.next_check_at ? formatDate(status.next_check_at) : ''">
+              {{ nextCheckTimeDisplay }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========================================================================= -->
+    <!-- 4. PC 与宽屏 主体区域 (md:pl-72 适配固定侧边栏)                             -->
+    <!-- ========================================================================= -->
+    <div class="md:pl-72 flex flex-col flex-1 min-w-0 min-h-screen bg-slate-50/70">
+
+      <!-- PC 端顶部功能 Header (吸顶常驻) -->
+      <header class="hidden md:flex sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200/80 px-6 lg:px-8 py-3.5 items-center justify-between shadow-xs">
+        <div>
+          <h1 class="font-bold text-base text-slate-900 flex items-center gap-2">
+            <template v-if="currentTab === 'dashboard'">监控大屏与最新报告</template>
+            <template v-else-if="currentTab === 'tasks'">任务调度与实时日志中心</template>
+            <template v-else-if="currentTab === 'commits'">GitHub 仓库提交记录</template>
+            <template v-else-if="currentTab === 'history'">历史分析报告库</template>
+            <template v-else-if="currentTab === 'manual'">手动触发分析流水线</template>
+            <template v-else-if="currentTab === 'settings'">系统参数与模型配置</template>
+            <span class="text-xs font-normal text-slate-400 hidden lg:inline">· War Thunder 自动化更新研判</span>
+          </h1>
+        </div>
+
+        <!-- 顶部操作栏与通道切换 -->
+        <div class="flex items-center space-x-3">
+          <!-- 端游 / 手游 分段切换开关 -->
+          <div class="inline-flex p-0.5 rounded-xl bg-slate-100 border border-slate-200">
+            <button @click="switchTarget('pc')"
+              class="px-3 py-1.5 text-xs font-bold rounded-lg transition flex items-center gap-1.5"
+              :class="activeTarget === 'pc' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'">
+              <span>🎮 端游 (PC)</span>
+            </button>
+            <button @click="switchTarget('mobile')"
+              class="px-3 py-1.5 text-xs font-bold rounded-lg transition flex items-center gap-1.5"
+              :class="activeTarget === 'mobile' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'">
+              <span>📱 手游 (WT Mobile)</span>
+            </button>
+          </div>
+
+          <!-- 任务状态胶囊指示器 -->
+          <div class="flex items-center space-x-2 text-xs px-3.5 py-1.5 rounded-full border transition-all cursor-pointer shadow-xs"
+            @click="currentTab = 'tasks'"
+            title="点击查看任务与实时日志"
+            :class="{
+              'bg-blue-50 border-blue-200 text-blue-700': task.status === 'running',
+              'bg-rose-50 border-rose-200 text-rose-700': task.status === 'failed',
+              'bg-emerald-50 border-emerald-200 text-emerald-700': task.status === 'completed',
+              'bg-slate-100 border-slate-200 text-slate-600': task.status === 'idle'
+            }">
+            <span class="relative flex h-2 w-2 flex-shrink-0">
+              <span v-if="task.status === 'running'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2"
+                :class="{
+                  'bg-blue-500': task.status === 'running',
+                  'bg-rose-500': task.status === 'failed',
+                  'bg-emerald-500': task.status === 'completed',
+                  'bg-slate-400': task.status === 'idle',
+                }"></span>
+            </span>
+            <span class="truncate max-w-[240px] font-medium">
+              <template v-if="task.status === 'running'">
+                分析中: {{ task.stage }} ({{ task.progress_percent }}%)
+              </template>
+              <template v-else-if="task.status === 'failed'">
+                分析失败: {{ task.error || '执行异常' }}
+              </template>
+              <template v-else-if="task.status === 'completed'">
+                分析完成: {{ task.stage || '就绪' }}
+              </template>
+              <template v-else>
+                等待分析 ({{ status.schedule_enabled ? '定时调度中 ' + (status.schedule_interval_minutes || 15) + '分' : '调度器就绪' }})
+              </template>
+            </span>
+          </div>
+
+          <!-- 任务重试按钮 -->
+          <button @click="retryTask" :disabled="task.status === 'running' || retryingTask"
+            title="重新执行上一次的任务"
+            class="px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition shadow-xs flex items-center gap-1.5"
+            :class="task.status === 'failed'
+              ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 ring-2 ring-rose-200/50'
+              : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 disabled:opacity-50 disabled:cursor-not-allowed'">
+            <svg v-if="!retryingTask" class="w-3.5 h-3.5" :class="task.status === 'failed' ? 'text-rose-600' : 'text-amber-500'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+            </svg>
+            <svg v-else class="animate-spin w-3.5 h-3.5 text-amber-500" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>重试任务</span>
+          </button>
+
+          <!-- 检查最新更新按钮 -->
+          <button @click="triggerQuickCheck" :disabled="task.status === 'running'"
+            class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:opacity-60 text-white text-xs font-semibold rounded-lg shadow-xs transition flex items-center gap-1.5">
+            <svg v-if="task.status !== 'running'" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            <svg v-else class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            <span>{{ task.status === 'running' ? '分析进行中' : '检查最新更新' }}</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 主内容容器 (自适应宽屏：最大 1600px 居中对齐，留白适中，移动端 p-4，PC 端 p-6/p-8) -->
+      <main class="w-full max-w-[1600px] mx-auto p-4 sm:p-6 lg:p-8 space-y-6 flex-1">
+
+        <!-- ========================================================================= -->
+        <!-- 全局常驻任务状态与实时终端看板                                               -->
+        <!-- ========================================================================= -->
+        <div class="rounded-2xl bg-white border transition-all duration-300 shadow-xs overflow-hidden"
+          :class="{
+            'border-blue-300 shadow-blue-500/5': task.status === 'running',
+            'border-rose-300 shadow-rose-500/5': task.status === 'failed',
+            'border-emerald-300 shadow-emerald-500/5': task.status === 'completed',
+            'border-slate-200/80': task.status === 'idle',
+          }">
+
+          <!-- 看板头部栏 -->
+          <div class="px-5 py-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/50">
+            <div class="flex items-center gap-3">
+              <!-- 状态徽章 -->
+              <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border shadow-xs"
+                :class="{
+                  'bg-blue-50 text-blue-700 border-blue-200': task.status === 'running',
+                  'bg-rose-50 text-rose-700 border-rose-200': task.status === 'failed',
+                  'bg-emerald-50 text-emerald-700 border-emerald-200': task.status === 'completed',
+                  'bg-slate-100 text-slate-600 border-slate-200': task.status === 'idle',
+                }">
+                <span class="relative flex h-2 w-2">
+                  <span v-if="task.status === 'running'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2"
+                    :class="{
+                      'bg-blue-500': task.status === 'running',
+                      'bg-rose-500': task.status === 'failed',
+                      'bg-emerald-500': task.status === 'completed',
+                      'bg-slate-400': task.status === 'idle',
+                    }"></span>
+                </span>
+                <span>{{ statusDisplay }}</span>
+              </span>
+
+              <div class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <span>任务当前状态</span>
+                <span v-if="task.id" class="text-xs font-mono font-normal text-slate-400 hidden sm:inline">#{{ task.id }}</span>
+              </div>
+            </div>
+
+            <!-- 操作按钮组 -->
+            <div class="flex items-center gap-2 flex-wrap">
+              <!-- 任务重试按钮 -->
+              <button @click="retryTask" :disabled="task.status === 'running' || retryingTask"
+                class="px-3 py-1.5 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 border shadow-xs"
+                :class="task.status === 'failed'
+                  ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 ring-2 ring-rose-300/40'
+                  : 'bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 border-slate-200'">
+                <svg v-if="!retryingTask" class="w-3.5 h-3.5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+                <svg v-else class="animate-spin w-3.5 h-3.5 text-amber-500" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>重试任务</span>
+              </button>
+
+              <!-- 查看生成报告 -->
+              <button v-if="task.result_report_id" @click="openReportHtml(task.result_report_id)"
+                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                <span>浏览报告 ↗</span>
+              </button>
+              <button v-if="task.result_report_id" @click="viewReportDetail(task.result_report_id)"
+                class="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-blue-600 text-xs font-medium rounded-lg border border-slate-200 shadow-xs transition flex items-center gap-1" title="平滑滚动定位到报告卡片">
+                <span>定位卡片 ↓</span>
+              </button>
+
+              <!-- 复制日志 -->
+              <button @click="copyLogs" title="复制全部日志"
+                class="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-600 text-xs font-medium rounded-lg border border-slate-200 shadow-xs transition flex items-center gap-1">
+                <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+                <span>复制日志</span>
+              </button>
+
+              <!-- 清空日志 -->
+              <button @click="clearLogs" title="清空日志"
+                class="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-500 hover:text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs transition">
+                清空
+              </button>
+
+              <!-- 折叠/展开日志 -->
+              <button @click="showLogs = !showLogs"
+                class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs transition flex items-center gap-1">
+                <span>{{ showLogs ? '收起日志' : '展开日志' }}</span>
+                <span class="text-slate-400 text-[10px]">({{ (task.logs || []).length }})</span>
+                <svg class="w-3 h-3 text-slate-400 transition-transform duration-200" :class="{ 'rotate-180': showLogs }" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 阶段与进度 -->
+          <div class="p-5 sm:p-6">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2 text-sm font-semibold"
+                :class="task.status === 'failed' ? 'text-rose-600' : (task.status === 'completed' ? 'text-emerald-600' : 'text-blue-600')">
+                <svg v-if="task.status === 'running'" class="animate-spin w-4 h-4 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <svg v-else-if="task.status === 'failed'" class="w-4 h-4 text-rose-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <svg v-else-if="task.status === 'completed'" class="w-4 h-4 text-emerald-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                <span class="truncate">{{ task.stage || '等待执行' }}</span>
+              </div>
+              <div class="text-xs font-mono font-bold"
+                :class="task.status === 'failed' ? 'text-rose-600' : (task.status === 'completed' ? 'text-emerald-600' : 'text-blue-600')">
+                {{ task.progress_percent || 0 }}%
+              </div>
+            </div>
+
+            <!-- 进度条本体 -->
+            <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-300"
+                :class="{
+                  'bg-blue-600': task.status === 'running',
+                  'bg-rose-500': task.status === 'failed',
+                  'bg-emerald-500': task.status === 'completed',
+                  'bg-slate-300': task.status === 'idle',
+                }"
+                :style="{ width: (task.progress_percent || 0) + '%' }"></div>
+            </div>
+
+            <!-- 元数据标签 (4 列自适应网格) -->
+            <div class="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div class="bg-slate-50/80 rounded-xl p-2.5 border border-slate-100">
+                <span class="text-slate-400 block mb-0.5">触发源</span>
+                <span class="text-slate-700 font-semibold truncate block">{{ task.trigger_mode === 'scheduled' ? '定时轮询' : (task.trigger_mode === 'manual' ? '手动触发' : (task.trigger_mode ? task.trigger_mode : '待定')) }}</span>
+              </div>
+              <div class="bg-slate-50/80 rounded-xl p-2.5 border border-slate-100">
+                <span class="text-slate-400 block mb-0.5">执行耗时</span>
+                <span class="text-slate-700 font-mono font-semibold block">{{ taskDuration }}</span>
+              </div>
+              <div class="bg-slate-50/80 rounded-xl p-2.5 border border-slate-100">
+                <span class="text-slate-400 block mb-0.5">启动时间</span>
+                <span class="text-slate-700 font-mono font-medium truncate block" :title="formatDate(task.started_at)">{{ formatDate(task.started_at) }}</span>
+              </div>
+              <div class="bg-slate-50/80 rounded-xl p-2.5 border border-slate-100">
+                <span class="text-slate-400 block mb-0.5">分析目标</span>
+                <span class="text-slate-700 font-medium truncate block" :title="task.params?.compare_range || '最新提交'">{{ task.params?.compare_range || (task.params?.diff_text ? '自定义补丁' : '最新提交') }}</span>
+              </div>
+            </div>
+
+            <!-- 失败错误详情框 -->
+            <div v-if="task.status === 'failed' && task.error" class="mt-4 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div class="flex items-start gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-rose-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                <div class="min-w-0">
+                  <div><span class="font-bold text-rose-900">任务执行失败: </span><span class="font-mono break-all text-rose-800">{{ task.error }}</span></div>
+                  <div class="text-[11px] text-rose-600 mt-0.5">该版本未标记完成，亦未更新给 API。修复网络或配置后可直接重试。</div>
+                </div>
+              </div>
+              <button @click="retryTask" :disabled="retryingTask" class="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold whitespace-nowrap shadow-xs transition flex-shrink-0">
+                立即重试
+              </button>
+            </div>
+
+            <!-- 操作通知提示 -->
+            <div v-if="logNotice" class="mt-3 py-2 px-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between shadow-xs">
+              <span>{{ logNotice }}</span>
+              <button @click="logNotice = ''" class="text-emerald-600 hover:text-emerald-800 font-bold">✕</button>
+            </div>
+
+            <!-- 实时日志终端展示 (嵌入白色卡片内部的极客高对比度暗色控制台) -->
+            <div v-if="showLogs" class="mt-4 rounded-xl bg-[#0d1117] border border-slate-800 overflow-hidden shadow-sm">
+              <!-- 终端控制条 -->
+              <div class="px-3.5 py-2.5 bg-[#161b22] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                  </div>
+                  <span class="font-mono text-slate-300 font-semibold ml-1">wtup-task-worker.log</span>
+                  <span class="text-slate-600">|</span>
+                  <span class="text-slate-400 text-[11px]">{{ filteredLogs.length }} / {{ (task.logs || []).length }} 行</span>
+                </div>
+
+                <div class="flex items-center gap-2 flex-wrap">
+                  <!-- 级别过滤 -->
+                  <div class="flex items-center gap-1 text-[11px] bg-[#0d1117] px-2 py-1 rounded-md border border-slate-700">
+                    <span class="text-slate-400">过滤:</span>
+                    <select v-model="logFilter" class="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                      <option value="all">全部</option>
+                      <option value="info">INFO</option>
+                      <option value="warn">WARN</option>
+                      <option value="error">ERROR</option>
+                    </select>
+                  </div>
+
+                  <!-- 搜索 -->
+                  <input v-model="logSearch" type="text" placeholder="搜索日志..."
+                    class="bg-[#0d1117] border border-slate-700 rounded-md px-2 py-1 text-[11px] text-slate-200 placeholder-slate-500 w-28 sm:w-36 focus:outline-none focus:border-blue-500">
+
+                  <!-- 自动滚动 -->
+                  <label class="flex items-center gap-1 text-slate-300 text-[11px] cursor-pointer">
+                    <input v-model="autoScrollLogs" type="checkbox" class="w-3.5 h-3.5 rounded text-blue-600 bg-[#0d1117] border-slate-700">
+                    <span>自动滚动</span>
+                  </label>
+
+                  <!-- 下载 -->
+                  <button @click="downloadLogs" title="下载当前日志文件" class="text-slate-400 hover:text-white transition p-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 终端日志内容区 -->
+              <div class="task-log-terminal max-h-72 overflow-y-auto p-3.5 font-mono text-xs leading-relaxed space-y-1 bg-[#0d1117] text-slate-300 selection:bg-blue-900 selection:text-white">
+                <div v-if="!filteredLogs.length" class="text-slate-500 py-6 text-center select-none">
+                  {{ (task.logs && task.logs.length) ? '没有匹配该筛选条件的日志' : '暂无任务执行日志，触发任务后将在此处实时显示执行过程与模型响应日志。' }}
+                </div>
+                <div v-for="(line, idx) in filteredLogs" :key="idx" class="flex items-start gap-2 hover:bg-[#161b22]/70 px-1 py-0.5 rounded transition-colors">
+                  <span class="text-slate-600 text-[10px] select-none w-7 text-right flex-shrink-0 font-mono">{{ idx + 1 }}</span>
+                  <div class="flex-1 min-w-0 break-all" :class="getLogLineClass(line)">
+                    {{ line }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- 错误提示 -->
+        <div v-if="errorMessage" class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-center justify-between shadow-xs">
+          <span>{{ errorMessage }}</span>
+          <button @click="errorMessage = ''" class="text-rose-600 hover:text-rose-800 font-semibold text-xs ml-4">关闭</button>
+        </div>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 1: 监控大屏与最新报告                                                    -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'dashboard'" class="space-y-6" id="report-detail-section">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">最新更新分析报告</h2>
+              <div class="text-xs text-slate-500 mt-0.5">查看最新拆包比对解析结果、装备改动条目与战术分析。</div>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <!-- 模板切换选择 -->
+              <div v-if="latestReport" class="flex items-center gap-1.5 text-xs bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-xs">
+                <span class="text-slate-400">渲染模板:</span>
+                <select v-model="selectedTemplate" class="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer">
+                  <option value="discord">1. Discord 黑暗风格 (默认)</option>
+                  <option value="miku">2. 初音未来 Miku 风格</option>
+                </select>
+              </div>
+
+              <button v-if="latestReport" @click="openHtmlModal" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs flex items-center gap-1.5 transition">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                <span>浏览网页</span>
+              </button>
+              <button v-if="latestReport" @click="openImageModal" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs flex items-center gap-1.5 transition">
+                <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                <span>查看报告长图</span>
+              </button>
+              <button v-if="latestReport" @click="downloadMarkdown(latestReport)" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs flex items-center gap-1.5 transition">
+                <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                <span>下载 Markdown</span>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="!latestReport" class="p-12 text-center rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+            <div class="text-slate-300 mb-3 text-5xl">📡</div>
+            <div class="text-slate-800 font-semibold mb-1 text-base">暂无分析报告</div>
+            <div class="text-slate-500 text-sm mb-5">系统尚未执行过更新分析，您可以点击下方按钮立即发起首次比对检查</div>
+            <button @click="triggerQuickCheck" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs transition">
+              立即触发检查与分析
+            </button>
+          </div>
+
+          <div v-else class="space-y-6">
+            <!-- 报告抬头卡片 -->
+            <div class="p-6 sm:p-8 rounded-2xl bg-white border border-slate-200/80 shadow-xs relative overflow-hidden">
+              <div class="flex flex-wrap items-start justify-between gap-4 mb-4">
+                <div>
+                  <div class="text-xs font-mono uppercase tracking-wider text-blue-600 font-semibold mb-1">Update Report</div>
+                  <h1 class="text-2xl sm:text-3xl font-bold text-slate-900">{{ latestReport.data?.report_title || latestReport.report_title }}</h1>
+                  <div class="text-xs text-slate-500 mt-1.5">提交区间: <span class="font-mono font-medium text-slate-700">{{ latestReport.commit_base ? latestReport.commit_base.slice(0,7) + '...' + latestReport.commit_head.slice(0,7) : '本地分析' }}</span> · 分析时间: {{ formatDate(latestReport.created_at) }}</div>
+                </div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-3 py-1 rounded-full text-xs font-semibold border shadow-xs"
+                    :class="latestReport.importance === '高' ? 'bg-rose-50 text-rose-700 border-rose-200' : (latestReport.importance === '低' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200')">
+                    重要程度: {{ latestReport.importance }}
+                  </span>
+                  <span v-for="tag in latestReport.tags" :key="tag" class="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 shadow-xs">
+                    {{ tag }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- 概述 -->
+              <div class="p-4 rounded-xl bg-slate-50 border-l-4 border-blue-600 text-slate-700 text-sm leading-relaxed mb-4">
+                {{ latestReport.summary }}
+              </div>
+
+              <!-- Token 与性能看板 -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50/70 border border-slate-100 text-xs">
+                <div><span class="text-slate-400">总 Token:</span> <span class="font-mono text-slate-800 font-bold ml-1">{{ latestReport.token_usage?.total_tokens || 0 }}</span></div>
+                <div><span class="text-slate-400">输入 / 输出:</span> <span class="font-mono text-slate-600 ml-1">{{ latestReport.token_usage?.prompt_tokens || 0 }} / {{ latestReport.token_usage?.completion_tokens || 0 }}</span></div>
+                <div><span class="text-slate-400">分析耗时:</span> <span class="font-mono text-slate-600 ml-1">{{ latestReport.elapsed_seconds ? latestReport.elapsed_seconds.toFixed(2) + 's' : '-' }}</span></div>
+                <div><span class="text-slate-400">触发源:</span> <span class="text-slate-700 font-medium ml-1">{{ latestReport.trigger_mode === 'scheduled' ? '定时轮询' : '手动触发' }}</span></div>
+              </div>
+            </div>
+
+            <!-- 更新详情分区卡片 -->
+            <div v-if="latestReport.data?.update_sections && latestReport.data.update_sections.length" class="space-y-4">
+              <h3 class="text-base font-bold text-slate-900">更新详情条目</h3>
+              <div v-for="(sec, sIdx) in latestReport.data.update_sections" :key="sIdx" class="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+                <h4 class="text-sm font-bold text-slate-900 mb-3.5 border-b border-slate-100 pb-2.5 flex items-center justify-between">
+                  <span class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-blue-600"></span>
+                    <span>{{ sec.title }}</span>
+                  </span>
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-normal">{{ sec.items?.length || 0 }} 项改动</span>
+                </h4>
+                <ul class="space-y-3 text-sm">
+                  <li v-for="(it, iIdx) in sec.items" :key="iIdx" class="text-slate-700">
+                    <div class="flex items-start gap-2.5">
+                      <span class="text-blue-600 font-bold mt-0.5">•</span>
+                      <div class="flex-1">
+                        <div class="font-medium text-slate-800">{{ it.text || it }}</div>
+                        <ul v-if="it.children && it.children.length" class="mt-1.5 ml-4 space-y-1 text-xs text-slate-500 list-disc">
+                          <li v-for="(c, cIdx) in it.children" :key="cIdx">{{ c.text || c }}</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- 关联图片与贴花画廊 -->
+            <div v-if="latestReport.data?.images && latestReport.data.images.length" class="space-y-4">
+              <div class="flex items-center justify-between">
+                <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                  更新关联贴花与美术资产
+                </h3>
+                <span class="text-xs text-slate-400">{{ latestReport.data.images.length }} 个资产原图</span>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                <div v-for="(img, imgIdx) in latestReport.data.images" :key="imgIdx"
+                  class="p-3.5 rounded-xl bg-white border border-slate-200/80 hover:border-blue-300 hover:shadow-xs transition flex flex-col items-center text-center group">
+                  <div class="w-full h-28 bg-slate-50 rounded-lg flex items-center justify-center p-2 mb-2 overflow-hidden border border-slate-100">
+                    <img :src="img.url" :alt="img.name" class="max-h-full max-w-full object-contain cursor-pointer group-hover:scale-105 transition duration-300" @click="previewSingleImage(img.url)">
+                  </div>
+                  <div class="text-xs font-semibold text-slate-800 truncate w-full" :title="img.name">{{ img.name }}</div>
+                  <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-500 mt-1.5">{{ img.type }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- AI 分析与研判 -->
+            <div v-if="(settingsForm.enable_ai_analysis || latestReport.data?.enable_ai_analysis) && latestReport.data?.ai_analysis" class="p-6 sm:p-7 rounded-2xl bg-gradient-to-br from-indigo-50/60 via-white to-blue-50/40 border border-indigo-100 shadow-xs">
+              <h3 class="text-base font-bold text-indigo-950 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                AI 智能战术研判与影响
+              </h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div v-if="latestReport.data.ai_analysis.player_impact?.length" class="p-4 rounded-xl bg-white border border-indigo-100/80 shadow-xs">
+                  <div class="text-xs font-bold text-indigo-700 uppercase tracking-wider mb-2">战术与对局影响</div>
+                  <ul class="space-y-1.5 text-xs text-slate-700 list-disc list-inside">
+                    <li v-for="(p, pIdx) in latestReport.data.ai_analysis.player_impact" :key="pIdx">{{ p }}</li>
+                  </ul>
+                </div>
+                <div v-if="latestReport.data.ai_analysis.uncertainties?.length" class="p-4 rounded-xl bg-white border border-amber-100/80 shadow-xs">
+                  <div class="text-xs font-bold text-amber-700 uppercase tracking-wider mb-2">不确定项与潜在风险</div>
+                  <ul class="space-y-1.5 text-xs text-slate-700 list-disc list-inside">
+                    <li v-for="(u, uIdx) in latestReport.data.ai_analysis.uncertainties" :key="uIdx">{{ u }}</li>
+                  </ul>
+                </div>
+              </div>
+              <div v-if="latestReport.data.ai_analysis.recommendation" class="mt-4 p-4 rounded-xl bg-blue-50 border border-blue-200/70 text-xs text-blue-900 font-medium">
+                <span class="font-bold">综合建议：</span> {{ latestReport.data.ai_analysis.recommendation }}
+              </div>
+            </div>
+
+            <!-- 居中模型与 Token 统计 -->
+            <div class="pt-6 border-t border-slate-200/80 text-center space-y-1">
+              <div class="text-xs text-slate-400">使用模型：<span class="font-mono text-blue-600 font-semibold">{{ latestReport.model || latestReport.data?.model || status.config_summary?.model }}</span></div>
+              <div class="text-xs text-slate-400">Token 消耗：总计 <span class="font-mono text-slate-700 font-bold">{{ latestReport.token_usage?.total_tokens || 0 }}</span> · 输入 <span class="font-mono text-slate-600">{{ latestReport.token_usage?.prompt_tokens || 0 }}</span> · 输出 <span class="font-mono text-slate-600">{{ latestReport.token_usage?.completion_tokens || 0 }}</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 2: 任务调度与实时日志中心                                               -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'tasks'" class="space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">任务调度与实时日志中心</h2>
+              <div class="text-xs text-slate-500 mt-0.5">监控分析流水线生命周期、实时终端日志输出与一键任务重试。</div>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button @click="retryTask" :disabled="task.status === 'running' || retryingTask"
+                class="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg shadow-xs transition flex items-center gap-1.5"
+                :class="{ 'animate-pulse ring-2 ring-rose-300 bg-rose-600 hover:bg-rose-700': task.status === 'failed' }">
+                <svg v-if="!retryingTask" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                <svg v-else class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <span>重试上一次任务</span>
+              </button>
+              <button v-if="task.result_report_id" @click="openReportHtml(task.result_report_id)"
+                class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-xs transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                <span>浏览最新报告 ↗</span>
+              </button>
+              <button @click="triggerQuickCheck" :disabled="task.status === 'running'"
+                class="px-3.5 py-1.5 bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 shadow-xs transition flex items-center gap-1.5">
+                检查最新更新
+              </button>
+            </div>
+          </div>
+
+          <!-- 任务状态概览卡片 -->
+          <div class="p-6 rounded-2xl bg-white border space-y-4 shadow-xs"
+            :class="{
+              'border-blue-300': task.status === 'running',
+              'border-rose-300': task.status === 'failed',
+              'border-emerald-300': task.status === 'completed',
+              'border-slate-200/80': task.status === 'idle',
+            }">
+            <div class="flex flex-wrap items-center justify-between gap-4">
+              <div class="flex items-center gap-3">
+                <span class="px-3 py-1 rounded-full text-xs font-semibold border flex items-center gap-1.5 shadow-xs"
+                  :class="{
+                    'bg-blue-50 text-blue-700 border-blue-200': task.status === 'running',
+                    'bg-rose-50 text-rose-700 border-rose-200': task.status === 'failed',
+                    'bg-emerald-50 text-emerald-700 border-emerald-200': task.status === 'completed',
+                    'bg-slate-100 text-slate-600 border-slate-200': task.status === 'idle',
+                  }">
+                  <span class="relative flex h-2 w-2">
+                    <span v-if="task.status === 'running'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2"
+                      :class="{
+                        'bg-blue-500': task.status === 'running',
+                        'bg-rose-500': task.status === 'failed',
+                        'bg-emerald-500': task.status === 'completed',
+                        'bg-slate-400': task.status === 'idle',
+                      }"></span>
+                  </span>
+                  <span>{{ statusDisplay }}</span>
+                </span>
+                <span class="font-bold text-base text-slate-900">{{ task.stage || '等待触发任务' }}</span>
+                <span v-if="task.id" class="text-xs font-mono text-slate-400">#{{ task.id }}</span>
+              </div>
+              <div class="text-xs font-mono text-slate-500 font-bold">
+                进度: {{ task.progress_percent || 0 }}%
+              </div>
+            </div>
+
+            <!-- 进度条 -->
+            <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+              <div class="h-full rounded-full transition-all duration-300"
+                :class="{
+                  'bg-blue-600': task.status === 'running',
+                  'bg-rose-500': task.status === 'failed',
+                  'bg-emerald-500': task.status === 'completed',
+                  'bg-slate-300': task.status === 'idle',
+                }"
+                :style="{ width: (task.progress_percent || 0) + '%' }"></div>
+            </div>
+
+            <!-- 详细指标网格 -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 text-xs">
+              <div class="p-3 rounded-xl bg-slate-50/80 border border-slate-100">
+                <div class="text-slate-400 mb-1">触发方式</div>
+                <div class="font-semibold text-slate-800">{{ task.trigger_mode === 'scheduled' ? '定时自动轮询' : (task.trigger_mode === 'manual' ? '手动触发' : (task.trigger_mode ? task.trigger_mode : '无')) }}</div>
+              </div>
+              <div class="p-3 rounded-xl bg-slate-50/80 border border-slate-100">
+                <div class="text-slate-400 mb-1">执行耗时</div>
+                <div class="font-semibold text-blue-600 font-mono">{{ taskDuration }}</div>
+              </div>
+              <div class="p-3 rounded-xl bg-slate-50/80 border border-slate-100">
+                <div class="text-slate-400 mb-1">启动时间</div>
+                <div class="font-semibold text-slate-700 font-mono truncate">{{ formatDate(task.started_at) }}</div>
+              </div>
+              <div class="p-3 rounded-xl bg-slate-50/80 border border-slate-100">
+                <div class="text-slate-400 mb-1">分析目标</div>
+                <div class="font-semibold text-slate-700 truncate" :title="task.params?.compare_range || '最新 Commit'">{{ task.params?.compare_range || (task.params?.diff_text ? '自定义补丁' : '最新 Commit') }}</div>
+              </div>
+            </div>
+
+            <!-- 错误信息提示 -->
+            <div v-if="task.status === 'failed' && task.error" class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div>
+                <span class="font-bold text-rose-900">异常中断原因: </span>
+                <span class="font-mono text-rose-800">{{ task.error }}</span>
+                <div class="text-[11px] text-rose-600 mt-1">失败版本已保留原状态，未标记完成，也不会发布给 API。修复网络或配置后可直接重试。</div>
+              </div>
+              <button @click="retryTask" :disabled="retryingTask" class="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg shadow-xs transition flex-shrink-0">
+                立即重试任务
+              </button>
+            </div>
+          </div>
+
+          <!-- 完整实时日志终端组件 -->
+          <div class="rounded-2xl bg-[#0d1117] border border-slate-800 overflow-hidden shadow-sm space-y-0">
+            <!-- 终端顶部工具栏 -->
+            <div class="p-3.5 bg-[#161b22] border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1.5">
+                  <span class="w-3 h-3 rounded-full bg-rose-500 inline-block"></span>
+                  <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+                  <span class="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span>
+                </div>
+                <span class="font-mono text-slate-300 font-semibold ml-1">wtup-live-worker.log</span>
+                <span class="text-slate-500 text-[11px]">({{ filteredLogs.length }} / {{ (task.logs || []).length }} 行)</span>
+              </div>
+
+              <div class="flex items-center gap-2 flex-wrap">
+                <!-- 级别筛选 -->
+                <div class="flex items-center gap-1 bg-[#0d1117] px-2 py-1 rounded-lg border border-slate-700 text-xs">
+                  <span class="text-slate-400">日志级别:</span>
+                  <select v-model="logFilter" class="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                    <option value="all">全部 (ALL)</option>
+                    <option value="info">INFO</option>
+                    <option value="warn">WARN</option>
+                    <option value="error">ERROR</option>
+                  </select>
+                </div>
+
+                <!-- 关键词搜索 -->
+                <input v-model="logSearch" type="text" placeholder="实时过滤关键字..."
+                  class="bg-[#0d1117] border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-36 sm:w-48">
+
+                <!-- 自动滚动 -->
+                <label class="flex items-center gap-1.5 text-slate-300 text-xs cursor-pointer bg-[#0d1117] px-2 py-1 rounded-lg border border-slate-700">
+                  <input v-model="autoScrollLogs" type="checkbox" class="w-3.5 h-3.5 rounded text-blue-600 bg-slate-900 border-slate-700">
+                  <span>自动滚动</span>
+                </label>
+
+                <!-- 复制日志 -->
+                <button @click="copyLogs" title="复制全部日志" class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-slate-300 rounded-lg border border-slate-700 transition">
+                  复制
+                </button>
+
+                <!-- 下载日志 -->
+                <button @click="downloadLogs" title="下载日志文件" class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-slate-300 rounded-lg border border-slate-700 transition">
+                  下载
+                </button>
+
+                <!-- 清空日志 -->
+                <button @click="clearLogs" title="清空日志" class="px-2.5 py-1 bg-[#21262d] hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 rounded-lg border border-slate-700 transition">
+                  清空
+                </button>
+              </div>
+            </div>
+
+            <!-- 终端日志内容 -->
+            <div class="task-log-terminal h-[520px] overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-1 bg-[#0d1117] text-slate-300 selection:bg-blue-900 selection:text-white">
+              <div v-if="!filteredLogs.length" class="text-slate-500 py-20 text-center select-none">
+                {{ (task.logs && task.logs.length) ? '没有匹配当前过滤条件的日志' : '暂无任务执行日志。触发更新分析后，流水线日志与大模型请求将在此处实时刷新。' }}
+              </div>
+              <div v-for="(line, idx) in filteredLogs" :key="idx" class="flex items-start gap-2.5 hover:bg-[#161b22]/70 px-1 py-0.5 rounded transition-colors">
+                <span class="text-slate-600 text-[10px] select-none w-8 text-right flex-shrink-0 font-mono">{{ idx + 1 }}</span>
+                <div class="flex-1 min-w-0 break-all" :class="getLogLineClass(line)">
+                  {{ line }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 3: GitHub 提交记录                                                      -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'commits'" class="space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <h2 class="text-lg font-bold text-slate-900">GitHub 仓库最新提交</h2>
+                <span class="text-[11px] font-mono px-2.5 py-0.5 rounded-full border shadow-xs"
+                  :class="githubData.source === 'local_git' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'">
+                  {{ githubData.source === 'local_git' ? '本地 Git 模式 (零限流)' : 'GitHub API 模式' }}
+                </span>
+              </div>
+              <div class="text-xs text-slate-500 mt-0.5 font-mono">{{ githubData.repo }} ({{ githubData.branch }})</div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button @click="syncLocalGit" :disabled="syncingGit" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-xs font-medium rounded-lg border border-slate-200 flex items-center gap-1.5 text-blue-600 shadow-xs transition">
+                <svg v-if="syncingGit" class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <span>{{ syncingGit ? '正在同步 Git...' : '同步本地 Git 仓库' }}</span>
+              </button>
+              <button @click="fetchCommits(true)" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-xs font-medium rounded-lg border border-slate-200 flex items-center gap-1.5 text-slate-700 shadow-xs transition">
+                <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                <span>刷新列表</span>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="loadingCommits" class="p-12 text-center text-slate-500 text-sm bg-white rounded-2xl border border-slate-200/80 shadow-xs">
+            <svg class="animate-spin w-6 h-6 mx-auto mb-2 text-blue-600" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            正在连接 GitHub 拉取提交记录...
+          </div>
+
+          <div v-else-if="githubData.commits && githubData.commits.length" class="space-y-3">
+            <div v-for="c in githubData.commits" :key="c.sha"
+              class="p-4 rounded-xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-xs transition flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 mb-1 flex-wrap">
+                  <span class="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">{{ c.sha.slice(0, 7) }}</span>
+                  <span v-if="c.sha === githubData.last_checked_commit" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">当前已分析位置</span>
+                  <span class="text-xs text-slate-400">{{ formatDate(c.authored_at) }}</span>
+                  <span class="text-xs text-slate-500">by {{ c.author_name }}</span>
+                </div>
+                <div class="text-sm font-medium text-slate-800 truncate">{{ c.message }}</div>
+              </div>
+
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <button @click="quickCompareToLatest(c.sha)" class="px-3 py-1.5 text-xs bg-slate-50 hover:bg-blue-600 hover:text-white text-slate-700 font-medium rounded-lg border border-slate-200 transition shadow-xs">
+                  比对分析至最新
+                </button>
+                <a :href="c.html_url" target="_blank" class="px-2.5 py-1.5 text-xs text-slate-500 hover:text-slate-800 transition">
+                  GitHub ↗
+                </a>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 4: 历史分析报告                                                         -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'history'" class="space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <span>历史分析报告列表</span>
+                <span class="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                  共 {{ historyItems.length }} 份 / 上限 {{ settingsForm.max_history_reports || 15 }} 份
+                </span>
+              </h2>
+              <div class="text-xs text-slate-500 mt-0.5">系统最多保存 {{ settingsForm.max_history_reports || 15 }} 份历史分析报告，超出上限将自动清理早期报告与图片。</div>
+            </div>
+            <button @click="fetchHistory" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-xs font-medium rounded-lg border border-slate-200 flex items-center gap-1.5 text-slate-700 shadow-xs transition">
+              <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              <span>刷新列表</span>
+            </button>
+          </div>
+
+          <div v-if="!historyItems.length" class="p-12 text-center text-slate-400 text-sm rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+            暂无历史报告数据
+          </div>
+
+          <div v-else class="space-y-3">
+            <div v-for="item in historyItems" :key="item.id"
+              class="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200/80 hover:border-slate-300 shadow-xs transition flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+                  <span class="font-bold text-sm text-slate-900">{{ item.report_title || 'War Thunder 更新' }}</span>
+                  <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                    :class="item.importance === '高' ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-slate-100 text-slate-700 border border-slate-200'">
+                    {{ item.importance }}
+                  </span>
+                  <span class="text-xs text-slate-400">{{ formatDate(item.created_at) }}</span>
+                </div>
+                <div class="text-xs text-slate-500 line-clamp-1 mb-2 leading-relaxed">{{ item.summary }}</div>
+                <div class="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+                  <span>Tokens: {{ item.token_usage?.total_tokens || 0 }}</span>
+                  <span>·</span>
+                  <span>耗时: {{ item.elapsed_seconds?.toFixed(1) || 0 }}s</span>
+                  <span v-if="item.commit_head">· 提交: {{ item.commit_head.slice(0, 7) }}</span>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 flex-wrap flex-shrink-0">
+                <button @click="viewReportDetail(item.id)" class="px-3 py-1.5 text-xs bg-white hover:bg-slate-50 text-slate-700 font-medium rounded-lg border border-slate-200 shadow-xs transition">
+                  查看报告
+                </button>
+                <a v-if="item.has_image" :href="'/api/report-image/' + item.id" target="_blank" class="px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium rounded-lg border border-blue-200 shadow-xs transition">
+                  长图 ↗
+                </a>
+                <button @click="deleteReport(item.id)" class="px-2.5 py-1.5 text-xs bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg border border-slate-200 hover:border-rose-200 shadow-xs transition flex items-center gap-1" title="删除该份历史报告">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                  <span>删除</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 5: 手动触发分析                                                         -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'manual'" class="space-y-6">
+          <div>
+            <h2 class="text-lg font-bold text-slate-900">手动触发分析</h2>
+            <div class="text-xs text-slate-500 mt-0.5">支持指定版本比较、自定义提交范围或上传 diff 补丁文件进行深度解析。</div>
+          </div>
+
+          <div class="p-6 sm:p-8 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-6">
+            <!-- 模式选择 -->
+            <div>
+              <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">选择分析模式</label>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                <button type="button" @click="manualForm.mode = 'latest'"
+                  class="p-4 rounded-xl border text-left transition shadow-xs"
+                  :class="manualForm.mode === 'latest' ? 'bg-blue-50/60 border-2 border-blue-600 text-blue-900' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'">
+                  <div class="font-bold text-sm mb-1" :class="manualForm.mode === 'latest' ? 'text-blue-900' : 'text-slate-800'">检查最新提交</div>
+                  <div class="text-xs" :class="manualForm.mode === 'latest' ? 'text-blue-700' : 'text-slate-500'">根据当前记录自动比对至最新 Commit</div>
+                </button>
+
+                <button type="button" @click="manualForm.mode = 'compare'"
+                  class="p-4 rounded-xl border text-left transition shadow-xs"
+                  :class="manualForm.mode === 'compare' ? 'bg-blue-50/60 border-2 border-blue-600 text-blue-900' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'">
+                  <div class="font-bold text-sm mb-1" :class="manualForm.mode === 'compare' ? 'text-blue-900' : 'text-slate-800'">指定提交范围</div>
+                  <div class="text-xs" :class="manualForm.mode === 'compare' ? 'text-blue-700' : 'text-slate-500'">输入 base...head 或版本号比对</div>
+                </button>
+
+                <button type="button" @click="manualForm.mode = 'diff'"
+                  class="p-4 rounded-xl border text-left transition shadow-xs"
+                  :class="manualForm.mode === 'diff' ? 'bg-blue-50/60 border-2 border-blue-600 text-blue-900' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'">
+                  <div class="font-bold text-sm mb-1" :class="manualForm.mode === 'diff' ? 'text-blue-900' : 'text-slate-800'">自定义 Diff 补丁</div>
+                  <div class="text-xs" :class="manualForm.mode === 'diff' ? 'text-blue-700' : 'text-slate-500'">粘贴或上传本地 .diff / .patch 文件</div>
+                </button>
+              </div>
+            </div>
+
+            <!-- 范围输入 -->
+            <div v-if="manualForm.mode === 'compare'">
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">提交/版本范围 (base...head)</label>
+              <input v-model="manualForm.compare_range" type="text" placeholder="例如: 2.56.0.38...2.56.0.39 或 sha1...sha2"
+                class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+            </div>
+
+            <!-- Diff 粘贴/上传 -->
+            <div v-if="manualForm.mode === 'diff'" class="space-y-3">
+              <label class="block text-xs font-semibold text-slate-700 mb-1.5">Diff 补丁文本</label>
+              <textarea v-model="manualForm.diff_text" rows="8" placeholder="diff --git a/... b/..."
+                class="w-full font-mono text-xs bg-white border border-slate-200 rounded-xl p-3 text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50"></textarea>
+              <input type="file" @change="handleFileUpload" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer">
+            </div>
+
+            <button @click="submitManualAnalysis" :disabled="task.status === 'running'"
+              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-xs transition">
+              {{ task.status === 'running' ? '分析任务正在运行中...' : '开始执行分析流水线' }}
+            </button>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 6: 系统设置                                                             -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'settings'" class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">系统参数与模型配置</h2>
+              <div class="text-xs text-slate-500 mt-0.5">配置 OpenAI 兼容服务端点、模型选择、思考链推理强度与自动化轮询周期。</div>
+            </div>
+            <button @click="saveSettings" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-xs transition">
+              保存当前配置
+            </button>
+          </div>
+
+          <div class="p-6 sm:p-8 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-7">
+            <!-- 供应商与密钥 -->
+            <div>
+              <h3 class="text-xs font-bold text-blue-600 uppercase tracking-wider mb-3">1. 模型供应商 API 设置</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">OpenAI 兼容 Base URL</label>
+                  <input v-model="settingsForm.openai_base_url" type="text" placeholder="https://api.openai.com/v1"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                  <div class="text-[11px] text-slate-400 mt-1">如 DeepSeek: https://api.deepseek.com/v1</div>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">API Key</label>
+                  <input v-model="settingsForm.openai_api_key" type="password" :placeholder="settingsForm.openai_api_key_masked || '输入 API 密钥 (留空保留原有)'"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                  <div class="text-[11px] text-slate-400 mt-1">密钥保存在服务端本地 data/config.json</div>
+                </div>
+              </div>
+
+              <!-- 自动拉取模型列表 -->
+              <div class="mt-3.5 flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100 flex-wrap gap-2">
+                <div class="text-xs text-slate-600">从配置的供应商网关动态拉取可用模型列表：</div>
+                <button type="button" @click="fetchRemoteModels" :disabled="loadingModels"
+                  class="px-3 py-1.5 bg-white hover:bg-slate-50 text-blue-600 text-xs font-medium rounded-lg border border-slate-200 shadow-xs flex items-center gap-1.5 transition">
+                  <svg v-if="loadingModels" class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                  <span>拉取模型列表 (GET /v1/models)</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 模型选择与分配 -->
+            <div class="pt-5 border-t border-slate-100">
+              <h3 class="text-xs font-bold text-blue-600 uppercase tracking-wider mb-3">2. 模型路由与角色分配</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">主要分析模型 (Primary Model)</label>
+                  <input v-model="settingsForm.model" list="model-options" type="text"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">总结模型 (Summary Model)</label>
+                  <input v-model="settingsForm.summary_model" list="model-options" type="text" placeholder="留空则复用主要分析模型"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">监督复核模型 (Review Model)</label>
+                  <input v-model="settingsForm.review_model" list="model-options" type="text" placeholder="留空则复用主要分析模型"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">监督复核模式 (Review Mode)</label>
+                  <select v-model="settingsForm.review_mode" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                    <option value="auto">auto - 自动平衡档</option>
+                    <option value="energy">energy - 节能轻量质检</option>
+                    <option value="quality">quality - 深度质量修正</option>
+                    <option value="off">off - 关闭监督复核</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">默认渲染模板 (Render Template)</label>
+                  <select v-model="settingsForm.render_template" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                    <option value="discord">1. Discord 黑暗风格 (默认)</option>
+                    <option value="miku">2. 初音未来 Miku 风格 (参考 daily_analysis)</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">图片渲染清晰度档位 (Resolution Scale)</label>
+                  <select v-model="settingsForm.render_scale" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-medium">
+                    <option value="1x">1x - 标准清晰度 (840px 宽，文件小、生成最快)</option>
+                    <option value="1.5x">1.5x - 高清推荐 (1260px 宽，兼顾体积与细节，默认)</option>
+                    <option value="2x">2x - 超清 Retina (1680px 宽，2K 高分锐利文字)</option>
+                    <option value="3x">3x - 极致 4K (2520px 宽，极致矢量细节)</option>
+                  </select>
+                  <div class="text-[11px] text-slate-400 mt-1">控制 Chromium 渲染引擎的清晰度倍率，适用于所有生成的报告长图</div>
+                </div>
+              </div>
+
+              <!-- datalist 供下拉选择 -->
+              <datalist id="model-options">
+                <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
+              </datalist>
+            </div>
+
+            <!-- 思考强度设置 -->
+            <div class="pt-5 border-t border-slate-100">
+              <h3 class="text-xs font-bold text-blue-600 uppercase tracking-wider mb-3">3. 思考链推理强度 (Reasoning & Thinking)</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">思考强度模式 (Thinking Effort)</label>
+                  <select v-model="settingsForm.thinking_mode" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                    <option value="off">off - 关闭思考模式 (默认标准输出)</option>
+                    <option value="low">low - 低强度推理 (快速)</option>
+                    <option value="medium">medium - 适中推理 (推荐)</option>
+                    <option value="high">high - 高强度深度推理 (全面)</option>
+                    <option value="custom">custom - 自定义 Token 预算</option>
+                  </select>
+                  <div class="text-[11px] text-slate-400 mt-1">适配 DeepSeek-R1、o1/o3-mini 等推理模型</div>
+                </div>
+
+                <div v-if="settingsForm.thinking_mode === 'custom'">
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">思考 Token 预算上限 (Budget Tokens)</label>
+                  <input v-model.number="settingsForm.thinking_budget_tokens" type="number" min="0" max="64000" step="512"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                </div>
+
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">采样温度 (Temperature): {{ settingsForm.temperature }}</label>
+                  <input v-model.number="settingsForm.temperature" type="range" min="0" max="1" step="0.05" class="w-full mt-2 accent-blue-600">
+                </div>
+              </div>
+            </div>
+
+            <!-- 定时更新与 GitHub 监控 (端游与手游独立) -->
+            <div class="pt-5 border-t border-slate-100">
+              <h3 class="text-xs font-bold text-blue-600 uppercase tracking-wider mb-3">4. 自动化定时轮询与 GitHub 仓库 (端游与手游通道独立)</h3>
+
+              <!-- 🎮 端游仓库监控 -->
+              <div class="p-4 rounded-xl bg-slate-50 border border-slate-200/80 mb-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="font-bold text-xs text-slate-800 flex items-center gap-1.5">
+                    <span>🎮 端游拆包仓库 (War Thunder PC / Console)</span>
+                  </div>
+                  <label class="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
+                    <input v-model="settingsForm.schedule_enabled" type="checkbox" class="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500">
+                    <span>启用端游后台定时轮询</span>
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">端游仓库 (GitHub Repo)</label>
+                    <input v-model="settingsForm.github_repo" type="text" placeholder="gszabi99/War-Thunder-Datamine"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">分支 (Branch)</label>
+                    <input v-model="settingsForm.github_branch" type="text" placeholder="master"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">端游检查周期 (分钟)</label>
+                    <input v-model.number="settingsForm.schedule_interval_minutes" type="number" min="1" max="1440"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 📱 手游仓库监控 -->
+              <div class="p-4 rounded-xl bg-blue-50/50 border border-blue-200/80 mb-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="font-bold text-xs text-blue-900 flex items-center gap-1.5">
+                    <span>📱 手游拆包仓库 (War Thunder Mobile)</span>
+                  </div>
+                  <label class="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
+                    <input v-model="settingsForm.mobile_schedule_enabled" type="checkbox" class="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500">
+                    <span>启用手游后台定时轮询</span>
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">手游仓库 (GitHub Repo)</label>
+                    <input v-model="settingsForm.github_mobile_repo" type="text" placeholder="gszabi99/War-Thunder-Mobile-Datamine"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">分支 (Branch)</label>
+                    <input v-model="settingsForm.github_mobile_branch" type="text" placeholder="master"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                  <div>
+                    <label class="block font-semibold text-slate-700 mb-1">手游检查周期 (分钟)</label>
+                    <input v-model.number="settingsForm.mobile_schedule_interval_minutes" type="number" min="1" max="1440"
+                      class="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 全局通用分析开关 -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">历史报告最大保存数量 (份)</label>
+                  <input v-model.number="settingsForm.max_history_reports" type="number" min="1" max="200"
+                    class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                  <div class="text-[11px] text-slate-400 mt-1">默认 15 份，超出将自动清理早期记录</div>
+                </div>
+              </div>
+
+              <div class="mt-4 space-y-3">
+                <label class="flex items-center gap-2.5 cursor-pointer text-sm text-slate-700">
+                  <input v-model="settingsForm.enable_struct_diff" type="checkbox" class="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500">
+                  <span>启用 BLKX / JSON 结构化新旧语义对比 (推荐)</span>
+                </label>
+
+                <label class="flex items-center gap-2.5 cursor-pointer text-sm text-slate-700">
+                  <input v-model="settingsForm.enable_model_tool_calls" type="checkbox" class="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500">
+                  <span>启用模型自主多轮工具调用 (Tool Calling)</span>
+                </label>
+
+                <label class="flex items-center gap-2.5 cursor-pointer text-sm text-slate-700">
+                  <input v-model="settingsForm.enable_ai_analysis" type="checkbox" class="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500">
+                  <span>报告中展示 AI 智能战术研判与深度推演 (默认关闭)</span>
+                </label>
+
+                <div v-if="settingsForm.enable_model_tool_calls" class="flex items-center gap-2 text-sm text-slate-700 pt-1">
+                  <span class="text-slate-500">最多调用轮数:</span>
+                  <input v-model.number="settingsForm.max_tool_call_rounds" type="number" min="1" max="10"
+                    class="w-20 bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-50 font-mono">
+                  <span class="text-slate-400 text-xs">轮 (默认 5 轮)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 报告防盗平铺水印设置 (端游与手游独立) -->
+            <div class="pt-5 border-t border-slate-100">
+              <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <h3 class="text-xs font-bold text-blue-600 uppercase tracking-wider">5. 报告防盗水印设置 (作用于 HTML 网页与渲染图片)</h3>
+
+                <!-- 端游 / 手游 水印子标签切换 -->
+                <div class="inline-flex p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-medium">
+                  <button type="button" @click="activeWatermarkTab = 'pc'"
+                    class="px-2.5 py-1 rounded transition"
+                    :class="activeWatermarkTab === 'pc' ? 'bg-white text-blue-600 font-bold shadow-2xs' : 'text-slate-600 hover:text-slate-900'">
+                    🎮 端游水印配置
+                  </button>
+                  <button type="button" @click="activeWatermarkTab = 'mobile'"
+                    class="px-2.5 py-1 rounded transition"
+                    :class="activeWatermarkTab === 'mobile' ? 'bg-blue-600 text-white font-bold shadow-2xs' : 'text-slate-600 hover:text-slate-900'">
+                    📱 手游水印配置
+                  </button>
+                </div>
+              </div>
+              <div class="text-xs text-slate-500 mb-4">端游与手游支持完全独立的水印开关、文字内容、密度与透明度配置。</div>
+
+              <!-- 🎮 端游水印面板 -->
+              <div v-if="activeWatermarkTab === 'pc'" class="space-y-4">
+                <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200/80">
+                  <span class="text-xs font-bold text-slate-800">端游报告水印总开关</span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" v-model="settingsForm.watermark_enabled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                    <span class="ml-2 text-xs font-semibold text-slate-700">{{ settingsForm.watermark_enabled ? '已开启' : '已关闭 (默认)' }}</span>
+                  </label>
+                </div>
+
+                <div v-if="settingsForm.watermark_enabled" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <div class="sm:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">端游水印文字 (Text)</label>
+                    <input v-model="settingsForm.watermark_text" type="text" placeholder="War Thunder Datamine"
+                      class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">密度 (Density)</label>
+                    <select v-model="settingsForm.watermark_density" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                      <option value="low">稀疏 (380x260 间距)</option>
+                      <option value="medium">适中 (260x180 间距)</option>
+                      <option value="high">密集 (180x120 间距)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div class="flex justify-between items-center mb-1">
+                      <label class="text-xs font-semibold text-slate-700">字号 (Size)</label>
+                      <span class="text-xs font-mono font-bold text-blue-600">{{ settingsForm.watermark_size }}px</span>
+                    </div>
+                    <input v-model.number="settingsForm.watermark_size" type="range" min="12" max="36" step="1" class="w-full mt-2 accent-blue-600">
+                  </div>
+                  <div class="sm:col-span-2 md:col-span-4">
+                    <div class="flex justify-between items-center mb-1">
+                      <label class="text-xs font-semibold text-slate-700">透明度 (Opacity)</label>
+                      <span class="text-xs font-mono font-bold text-blue-600">{{ Math.round((settingsForm.watermark_opacity || 0.12) * 100) }}% ({{ settingsForm.watermark_opacity }})</span>
+                    </div>
+                    <input v-model.number="settingsForm.watermark_opacity" type="range" min="0.02" max="0.5" step="0.01" class="w-full mt-1 accent-blue-600">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 📱 手游水印面板 -->
+              <div v-if="activeWatermarkTab === 'mobile'" class="space-y-4">
+                <div class="flex items-center justify-between p-3 rounded-xl bg-blue-50/60 border border-blue-200/80">
+                  <span class="text-xs font-bold text-blue-900">手游报告水印总开关</span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" v-model="settingsForm.mobile_watermark_enabled" class="sr-only peer">
+                    <div class="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                    <span class="ml-2 text-xs font-semibold text-slate-700">{{ settingsForm.mobile_watermark_enabled ? '已开启' : '已关闭 (默认)' }}</span>
+                  </label>
+                </div>
+
+                <div v-if="settingsForm.mobile_watermark_enabled" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <div class="sm:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">手游水印文字 (Text)</label>
+                    <input v-model="settingsForm.mobile_watermark_text" type="text" placeholder="War Thunder Mobile Datamine"
+                      class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50 font-mono">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">密度 (Density)</label>
+                    <select v-model="settingsForm.mobile_watermark_density" class="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-50">
+                      <option value="low">稀疏 (380x260 间距)</option>
+                      <option value="medium">适中 (260x180 间距)</option>
+                      <option value="high">密集 (180x120 间距)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div class="flex justify-between items-center mb-1">
+                      <label class="text-xs font-semibold text-slate-700">字号 (Size)</label>
+                      <span class="text-xs font-mono font-bold text-blue-600">{{ settingsForm.mobile_watermark_size }}px</span>
+                    </div>
+                    <input v-model.number="settingsForm.mobile_watermark_size" type="range" min="12" max="36" step="1" class="w-full mt-2 accent-blue-600">
+                  </div>
+                  <div class="sm:col-span-2 md:col-span-4">
+                    <div class="flex justify-between items-center mb-1">
+                      <label class="text-xs font-semibold text-slate-700">透明度 (Opacity)</label>
+                      <span class="text-xs font-mono font-bold text-blue-600">{{ Math.round((settingsForm.mobile_watermark_opacity || 0.12) * 100) }}% ({{ settingsForm.mobile_watermark_opacity }})</span>
+                    </div>
+                    <input v-model.number="settingsForm.mobile_watermark_opacity" type="range" min="0.02" max="0.5" step="0.01" class="w-full mt-1 accent-blue-600">
+                  </div>
+                </div>
+              </div>
+
+              <!-- 实时效果预览窗 -->
+              <div class="mt-4 pt-3 border-t border-slate-100">
+                <div class="text-xs font-semibold text-slate-600 mb-2 flex items-center justify-between">
+                  <span>💡 {{ activeWatermarkTab === 'mobile' ? '手游水印实时预览' : '端游水印实时预览' }} (模拟卡片环境)：</span>
+                  <span class="text-[11px] text-slate-400 font-mono">{{ activeWatermarkTab === 'mobile' ? (settingsForm.mobile_watermark_enabled ? '已激活' : '当前未开启') : (settingsForm.watermark_enabled ? '已激活' : '当前未开启') }}</span>
+                </div>
+                <div class="relative h-32 rounded-xl bg-[#313338] border border-slate-700 overflow-hidden flex items-center justify-center p-4">
+                  <div class="absolute inset-0 pointer-events-none" :style="watermarkPreviewStyle"></div>
+                  <div class="relative z-10 text-center space-y-1 select-none">
+                    <div class="text-sm font-bold text-white">{{ activeWatermarkTab === 'mobile' ? 'War Thunder Mobile 更新报告样例' : '2.57.1.130 → 2.57.1.131 (端游样例)' }}</div>
+                    <div class="text-xs text-slate-300">载具数据 · 军备配置 · 贴图与经济数值更新</div>
+                    <div class="text-[11px] text-emerald-400 font-mono font-semibold mt-1">✓ 水印已实时渲染于上方</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 7: API 接口文档 (支持 target=mobile 手游规范)                           -->
+        <!-- ========================================================================= -->
+        <section v-if="currentTab === 'api_docs'" class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">WTUP OpenAPI 接口文档</h2>
+              <div class="text-xs text-slate-500 mt-0.5">面向第三方机器人 (如 AstrBot)、自动化脚本与外部看板的标准化 RESTful API。支持通过 <code class="bg-blue-50 text-blue-700 px-1 py-0.5 rounded font-mono font-bold">target=mobile</code> 无缝获取手游拆包数据。</div>
+            </div>
+          </div>
+
+          <div class="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-6">
+            <!-- 核心参数规范 -->
+            <div class="p-4 rounded-xl bg-blue-50 border border-blue-200/70 text-xs text-blue-900 space-y-1.5">
+              <div class="font-bold flex items-center gap-1.5">
+                <span class="px-1.5 py-0.5 bg-blue-600 text-white rounded font-mono text-[10px]">通用规范</span>
+                <span>端游与手游参数区分说明</span>
+              </div>
+              <div>所有查询与操作 API 缺省针对<strong>端游 (PC / Console)</strong>。如需查询或操作<strong>手游 (War Thunder Mobile)</strong>，仅需在请求中追加查询参数 <code class="bg-white px-1.5 py-0.5 rounded font-mono font-bold text-blue-700 border border-blue-200">?target=mobile</code> 或在 POST JSON Body 中附带 <code class="bg-white px-1.5 py-0.5 rounded font-mono font-bold text-blue-700 border border-blue-200">"target": "mobile"</code>。</div>
+            </div>
+
+            <!-- API 表格清单 -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left">
+                <thead class="text-[11px] uppercase tracking-wider text-slate-400 bg-slate-50 border-y border-slate-100 font-bold">
+                  <tr>
+                    <th class="py-2.5 px-3">方法</th>
+                    <th class="py-2.5 px-3">路径 (Path)</th>
+                    <th class="py-2.5 px-3">关键参数</th>
+                    <th class="py-2.5 px-3">说明</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 font-mono text-slate-700">
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded">GET</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/status</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>?target=mobile</code></td>
+                    <td class="py-3 px-3 font-sans">查询系统运行状态、任务状态、两端仓库地址与下一次轮询时间</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded">GET</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/latest</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>?target=mobile</code></td>
+                    <td class="py-3 px-3 font-sans">获取最新一次成功分析的报告 JSON，包含标题、重要度、图片地址等 (供 AstrBot 轮询)</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded">GET</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/history</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>?target=mobile</code></td>
+                    <td class="py-3 px-3 font-sans">获取历史报告列表摘要</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded">GET</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/report-image/{id}</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>?template=discord</code></td>
+                    <td class="py-3 px-3 font-sans">获取该报告渲染出的 PNG 图片文件流</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded">GET</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/report-html/{id}</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>?watermark=1&wm_text=...</code></td>
+                    <td class="py-3 px-3 font-sans">获取在线 HTML 完整报告网页</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-blue-50 text-blue-700 font-bold rounded">POST</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/analyze/trigger</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>{"target":"mobile","mode":"latest"}</code></td>
+                    <td class="py-3 px-3 font-sans">触发一次异步更新检查或版本比对分析</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-blue-50 text-blue-700 font-bold rounded">POST</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/reports/{id}/rerender</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>{"render_scale":"2x"}</code></td>
+                    <td class="py-3 px-3 font-sans">根据最新的分辨率清晰度与水印配置，秒级无损重新生成已有报告的图片</td>
+                  </tr>
+                  <tr>
+                    <td class="py-3 px-3"><span class="px-2 py-0.5 bg-blue-50 text-blue-700 font-bold rounded">POST</span></td>
+                    <td class="py-3 px-3 font-bold text-slate-900">/api/git/sync</td>
+                    <td class="py-3 px-3 text-slate-500 font-sans"><code>{"target":"mobile"}</code></td>
+                    <td class="py-3 px-3 font-sans">强制从 GitHub 增量 fetch 目标本地 Git 仓库</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 5. 模态框 (图片预览 & HTML 网页预览)                                         -->
+    <!-- ========================================================================= -->
+
+    <!-- 图片大图预览模态框 -->
+    <div v-if="showImageModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" @click.self="showImageModal = false">
+      <div class="bg-white border border-slate-200 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+        <div class="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 flex-wrap gap-2">
+          <h3 class="font-bold text-slate-900 text-sm">报告图片预览</h3>
+          <div class="flex items-center gap-2.5">
+            <button v-if="latestReport" @click="rerenderReportImage(latestReport.id)" :disabled="rerenderingImage"
+              class="px-3 py-1 bg-white hover:bg-slate-50 text-blue-600 text-xs font-medium rounded-lg border border-slate-200 shadow-xs flex items-center gap-1.5 transition">
+              <svg v-if="rerenderingImage" class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+              <span>{{ rerenderingImage ? '正在重新渲染...' : '按当前配置重新渲染图片' }}</span>
+            </button>
+            <a :href="latestReportImageUrl ? (latestReportImageUrl + '?t=' + imageTimestamp) : '#'" download="wt_datamine_report.png" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg font-medium shadow-xs">
+              下载原图
+            </a>
+            <button @click="showImageModal = false" class="text-slate-400 hover:text-slate-600 text-base">✕</button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-auto p-4 flex justify-center bg-slate-50">
+          <img v-if="latestReportImageUrl" :src="latestReportImageUrl + '?t=' + imageTimestamp" class="max-w-full h-auto rounded-xl shadow-md" alt="Report Image">
+          <div v-else class="text-slate-400 text-sm py-12">未找到预生成图片</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HTML 报告在线浏览模态框 -->
+    <div v-if="showHtmlModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" @click.self="showHtmlModal = false">
+      <div class="bg-white border border-slate-200 rounded-2xl max-w-5xl w-full h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+        <div class="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div class="flex items-center gap-3">
+            <h3 class="font-bold text-slate-900 text-sm">HTML 报告实时预览</h3>
+            <span class="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-mono">当前模板: {{ selectedTemplate === 'miku' ? '2. Miku 蓝绿风格' : '1. Discord 黑暗风格' }}</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <a :href="currentHtmlUrl" target="_blank" class="px-3 py-1 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-xs">
+              新窗口打开 ↗
+            </a>
+            <button @click="showHtmlModal = false" class="text-slate-400 hover:text-slate-600 text-base">✕</button>
+          </div>
+        </div>
+        <div class="flex-1 bg-slate-100 overflow-hidden">
+          <iframe :src="currentHtmlUrl" class="w-full h-full border-none"></iframe>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
